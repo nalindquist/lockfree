@@ -742,4 +742,26 @@ mod queue_tests {
     test_queue_concurrent_speed(
       CoarseLockQueue::new(), 1.0, 0.5, 10);
   }
+
+  #[test]
+  fn ms_queue_correctness() {
+    test_queue_correctness(MSQueue::new());
+  }
+
+  #[test]
+  fn ms_queue_correctness_concurrent() {
+    test_queue_concurrent_correctness(
+      MSQueue::new(), 0.0001, 0.5, 2);
+  }
+
+  #[test]
+  fn ms_queue_speed() {
+    test_queue_speed(MSQueue::new(), 1.0, 0.5);
+  }
+
+  #[test]
+  fn ms_queue_speed_concurrent() {
+    test_queue_concurrent_speed(
+      MSQueue::new(), 1.0, 0.5, 10);
+  }
 }
