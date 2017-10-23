@@ -10,7 +10,6 @@ pub mod linearization;
 //// Utilities
 ///////////////////////////////////////////////////////////////////////////////
 
-
 #[cfg(test)]
 mod utilities {
   use std::time::Duration;
@@ -466,7 +465,7 @@ mod stack_tests {
   fn coarse_lock_stack_correctness_concurrent() {
     for _ in 0..10 {
       test_stack_concurrent_correctness(
-        CoarseLockStack::new(), 0.00001, 0.5, 10);
+        CoarseLockStack::new(), 0.0001, 0.8, 10);
     }
   }
 
@@ -490,7 +489,7 @@ mod stack_tests {
   fn treiber_stack_correctness_concurrent() {
     for _ in 0..10 {
       test_stack_concurrent_correctness(
-        stack::TreiberStack::new(), 0.00001, 0.5, 10);
+        stack::TreiberStack::new(), 0.0001, 0.8, 10);
     }
   }
 
@@ -612,7 +611,7 @@ mod queue_tests {
             let op_stop: SystemTime;
 
             let f = rng.next_f64();
-            if f > p_enq {
+            if f < p_enq {
               let i: i32 = rng.gen();
 
               op_start = SystemTime::now();
@@ -679,7 +678,7 @@ mod queue_tests {
 
           let elapsed = loop {
             let f = rng.next_f64();
-            if f > p_enq {
+            if f < p_enq {
               queue.enq(42);
             } else {
               queue.deq();
@@ -734,7 +733,7 @@ mod queue_tests {
   fn coarse_lock_queue_correctness_concurrent() {
     for _ in 0..10 {
       test_queue_concurrent_correctness(
-        CoarseLockQueue::new(), 0.0001, 0.5, 2);
+        CoarseLockQueue::new(), 0.0001, 0.2, 10);
     }
   }
 
@@ -758,7 +757,7 @@ mod queue_tests {
   fn ms_queue_correctness_concurrent() {
     for _ in 0..10 {
       test_queue_concurrent_correctness(
-        MSQueue::new(), 0.0001, 0.5, 2);
+        MSQueue::new(), 0.0001, 0.2, 10);
     }
   }
 

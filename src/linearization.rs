@@ -1,3 +1,12 @@
+///////////////////////////////////////////////////////////////////////////////
+//// 
+//// Module: linearization
+////
+//// Credits:
+////   DFS-based alg. - https://www.cl.cam.ac.uk/techreports/UCAM-CL-TR-579.pdf
+////
+///////////////////////////////////////////////////////////////////////////////
+
 use std::time::SystemTime;
 use std::fs::File;
 use std::io::Write;
@@ -40,6 +49,7 @@ where Self::A: Action {
     let mut alists = Vec::new();
     let mut actions = self.gen(log);
     let mut i = 0;
+    //let mut f = File::create("path.txt").unwrap();
 
     loop {
       if self.pred(log) {
@@ -48,9 +58,7 @@ where Self::A: Action {
         let a = actions[i];
 
         if !self.contains(&a) {
-          // println!("ID: {:?}", a.get_id());
-          // println!("Count: {}", self.count());
-
+          //f.write_all(format!("PUSH {:?}\n", a.get_id()).as_bytes()).unwrap();
           self.push(a);
           alists.push((actions, i + 1));
           actions = self.gen(log);
@@ -61,20 +69,12 @@ where Self::A: Action {
       } else if self.count() == 0 {
         break;
       } else {
-        //println!("Pop");
-
+        //f.write_all(format!("POP\n").as_bytes()).unwrap();
         self.pop();
 
         let pair = alists.pop().unwrap();
         actions = pair.0;
         i = pair.1;
-
-        // if i < actions.len() {
-        //   println!("Prev ID: {:?}", self.peek().get_id());
-        //   for a in actions.iter() {
-        //     println!("Post ID:     {:?}", a.get_id());
-        //   }
-        // }
       }
     }
 
