@@ -464,8 +464,10 @@ mod stack_tests {
 
   #[test]
   fn coarse_lock_stack_correctness_concurrent() {
-    test_stack_concurrent_correctness(
-      CoarseLockStack::new(), 0.00001, 0.5, 10);
+    for _ in 0..10 {
+      test_stack_concurrent_correctness(
+        CoarseLockStack::new(), 0.00001, 0.5, 10);
+    }
   }
 
   #[test]
@@ -486,8 +488,10 @@ mod stack_tests {
 
   #[test]
   fn treiber_stack_correctness_concurrent() {
-    test_stack_concurrent_correctness(
-      stack::TreiberStack::new(), 0.00001, 0.5, 10);
+    for _ in 0..10 {
+      test_stack_concurrent_correctness(
+        stack::TreiberStack::new(), 0.00001, 0.5, 10);
+    }
   }
 
   #[test]
@@ -587,7 +591,7 @@ mod queue_tests {
   }
 
   fn test_queue_concurrent_correctness<Q: ConcurrentQueue<i32>>(
-    queue: Q, t_secs: f64, p_enq: f64, n_threads: usize) {
+    queue: Q, t_secs: f64, p_enq: f64, n_threads: usize) {   
     let mut handles = Vec::new();
     let mut log = Vec::new();
 
@@ -728,8 +732,10 @@ mod queue_tests {
 
   #[test]
   fn coarse_lock_queue_correctness_concurrent() {
-    test_queue_concurrent_correctness(
-      CoarseLockQueue::new(), 0.0001, 0.5, 2);
+    for _ in 0..10 {
+      test_queue_concurrent_correctness(
+        CoarseLockQueue::new(), 0.0001, 0.5, 2);
+    }
   }
 
   #[test]
@@ -750,8 +756,10 @@ mod queue_tests {
 
   #[test]
   fn ms_queue_correctness_concurrent() {
-    test_queue_concurrent_correctness(
-      MSQueue::new(), 0.0001, 0.5, 2);
+    for _ in 0..10 {
+      test_queue_concurrent_correctness(
+        MSQueue::new(), 0.0001, 0.5, 2);
+    }
   }
 
   #[test]
