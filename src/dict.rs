@@ -20,7 +20,7 @@ use rand::{self, Rng, ThreadRng};
 pub trait Dict<K,V> {
   fn new() -> Self;
   fn get(&self, k: &K) -> Option<V>;
-  fn put(&mut self, k: K, v: V);
+  fn put(&mut self, k: K, v: V) -> Option<V>;
   fn remove(&mut self, k: &K) -> Option<V>;
   fn is_empty(&self) -> bool;
   fn size(&self) -> usize;
@@ -51,8 +51,8 @@ where K: Eq + Hash, V: Clone {
     })
   }
 
-  fn put(&mut self, k: K, v: V) {
-    self.ht.insert(k, v);
+  fn put(&mut self, k: K, v: V) -> Option<V> {
+    self.ht.insert(k, v)
   }
 
   fn remove(&mut self, k: &K) -> Option<V> {
@@ -189,7 +189,7 @@ where K: Eq + Ord, V: Clone {
     })
   }
 
-  fn put(&mut self, k: K, v: V) {
+  fn put(&mut self, k: K, v: V) -> Option<V> {
     let (mut preds, mut succs, node) = self.find(&k);
 
     match node {
@@ -217,9 +217,13 @@ where K: Eq + Ord, V: Clone {
         }
 
         self.count += 1;
+
+        None
       }
       Some(p) => {
+        let old = p.borrow_mut().value.clone();
         p.borrow_mut().value = v;
+        Some(old)
       }
     }
   }
@@ -275,8 +279,8 @@ where K: Eq + Hash, V: Clone {
     self.arc.lock().unwrap().get(k)
   }
 
-  fn put(&mut self, k: K, v: V) {
-    self.arc.lock().unwrap().put(k, v);
+  fn put(&mut self, k: K, v: V) -> Option<V> {
+    self.arc.lock().unwrap().put(k, v)
   }
 
   fn remove(&mut self, k: &K) -> Option<V> {
@@ -303,3 +307,9 @@ where K: Eq + Hash, V: Clone {
 
 impl<K,V> ConcurrentDict<K,V> for CoarseLockHtDict<K,V>
 where K: Eq + Hash + Send + Sync, V: Clone + Send + Sync {}
+
+
+///////////////////////////////////////////////////////////////////////////////
+//// LockfreeSkiplist
+///////////////////////////////////////////////////////////////////////////////
+

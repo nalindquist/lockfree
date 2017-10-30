@@ -965,15 +965,18 @@ mod dict_tests {
       match choose_op(rng, &self.ops) {
         DictTestOp::Get => {
           let args = gen_args(rng, 1);
-          self.dict.get(&args[0]);
+          let k = args[0].abs() % 50;
+          self.dict.get(&k);
         }
         DictTestOp::Put => {
           let args = gen_args(rng, 2);
-          self.dict.put(args[0], args[1]);
+          let k = args[0].abs() % 50;
+          self.dict.put(k, args[1]);
         }
         DictTestOp::Remove => {
           let args = gen_args(rng, 1);
-          self.dict.remove(&args[0]);
+          let k = args[0].abs() % 50;
+          self.dict.remove(&k);
         }
       }
     }
@@ -986,24 +989,27 @@ mod dict_tests {
       match choose_op(rng, &self.ops) {
         DictTestOp::Get => {
           let args = gen_args(rng, 1);
+          let k = args[0].abs() % 50;
           start = SystemTime::now();
-          let r = self.dict.get(&args[0]);
+          let r = self.dict.get(&k);
           stop = SystemTime::now();
-          op = DictOp::Get(args[0], r);
+          op = DictOp::Get(k, r);
         }
         DictTestOp::Put => {
           let args = gen_args(rng, 2);
+          let k = args[0].abs() % 50;
           start = SystemTime::now();
-          self.dict.put(args[0], args[1]);
+          let r = self.dict.put(k, args[1]);
           stop = SystemTime::now();
-          op = DictOp::Put(args[0], args[1]);
+          op = DictOp::Put(k, args[1], r);
         }
         DictTestOp::Remove => {
           let args = gen_args(rng, 1);
+          let k = args[0].abs() % 50;
           start = SystemTime::now();
-          let r = self.dict.remove(&args[0]);
+          let r = self.dict.remove(&k);
           stop = SystemTime::now();
-          op = DictOp::Remove(args[0], r);
+          op = DictOp::Remove(k, r);
         }
       }
 
@@ -1152,7 +1158,7 @@ mod dict_tests {
   fn coarse_lock_ht_dict_correctness_concurrent() {
     for _ in 0..10 {
       test_dict_concurrent_correctness(
-        CoarseLockHtDict::new(), 0.0001, 0.33, 0.33, 10);
+        CoarseLockHtDict::new(), 0.0001, 0.70, 0.20, 10);
     }
   }
 

@@ -384,7 +384,7 @@ where T: Copy + Clone + Eq + Debug {
 pub enum DictOp<K,V> 
 where K: Copy + Clone + Debug, V: Copy + Clone + Debug {
   Get(K, Option<V>),
-  Put(K, V),
+  Put(K, V, Option<V>),
   Remove(K, Option<V>),
 }
 
@@ -414,7 +414,7 @@ where K: Copy + Clone + Debug + Eq + Hash, V: Copy + Clone + Debug + Eq {
       DictOp::Get(k,r) => {
         assert_eq!(self.state.get(&k), r.as_ref());
       }
-      DictOp::Put(k,v) => {
+      DictOp::Put(k,v,_) => {
         self.state.insert(k,v);
       }
       DictOp::Remove(k,r) => {
@@ -432,9 +432,12 @@ where K: Copy + Clone + Debug + Eq + Hash, V: Copy + Clone + Debug + Eq {
         DictOp::Get(k,r) => {
           assert_eq!(self.state.get(&k), r.as_ref());
         }
-        DictOp::Put(k,v) => {
+        DictOp::Put(k,v,r) => {
           assert_eq!(self.state.get(&k), Some(&v));
           self.state.remove(&k);
+          r.map(|v| {
+            self.state.insert(k,v);
+          });
         }
         DictOp::Remove(k,r) => {
           assert_eq!(self.state.get(&k), None);
@@ -463,8 +466,8 @@ where K: Copy + Clone + Debug + Eq + Hash, V: Copy + Clone + Debug + Eq {
       DictOp::Get(k,r) => {
         self.state.get(&k) == r.as_ref()
       }
-      DictOp::Put(_,_) => {
-        true
+      DictOp::Put(k,_,r) => {
+        self.state.get(&k) == r.as_ref()
       }
       DictOp::Remove(k,r) => {
         self.state.get(&k) == r.as_ref()
