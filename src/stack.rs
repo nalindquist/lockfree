@@ -241,7 +241,7 @@ impl<T> Stack<T> for TreiberStack<T> {
 
 impl<T> Clone for TreiberStack<T> {
   fn clone(&self) -> Self {
-    TreiberStack {
+    Self {
       head: self.head.clone(),
     }
   }

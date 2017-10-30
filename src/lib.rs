@@ -3,6 +3,7 @@ extern crate rand;
 
 pub mod stack;
 pub mod queue;
+pub mod dict;
 pub mod linearization;
 
 
@@ -12,7 +13,27 @@ pub mod linearization;
 
 #[cfg(test)]
 mod utilities {
-  use std::time::Duration;
+  use super::linearization::*;
+  use std::time::{Duration, Instant};
+  use std::fs::File;
+  use std::io::Write;
+  use rand::{self, Rng, ThreadRng};
+  use crossbeam;
+
+  pub trait TestOp: Copy {}
+
+  pub trait Tester {
+    fn execute_op(&mut self, rng: &mut ThreadRng);
+  }
+
+  pub trait ConcurrentTester: Clone + Send + Sync
+  where Self::L: Linearization {
+    type L;
+
+    fn execute_op(&mut self, rng: &mut ThreadRng);
+    fn record_op(&mut self, rng: &mut ThreadRng, tid: usize, i: usize) -> Action<<Self::L as Linearization>::P>;
+    fn lin(&self) -> Self::L;
+  }
 
   pub fn duration_to_ns(d: Duration) -> f64 {
     (d.as_secs() as f64) * 1_000_000_000.0 +
@@ -23,6 +44,166 @@ mod utilities {
     Duration::new(
       t as u64,
       ((t - ((t as u64) as f64)) * 1_000_000_000.0) as u32)
+  }
+
+  pub fn write_log<P: Op>(mut log: Vec<Action<P>>, name: &str) {
+    log.sort_by(|a1, a2| {
+      a1.get_start().cmp(&a2.get_start())
+    });
+
+    let mut f = File::create(name).unwrap();
+    for a in log.iter() {
+      f.write_all(format!("{:?}\n", a).as_bytes()).unwrap();
+    }
+  }
+
+  pub fn write_history<P: Op>(history: &Vec<Action<P>>, name: &str) {
+    let mut f = File::create(name).unwrap();
+
+    for a in history.iter() {
+      f.write_all(format!("{:?}\n", a).as_bytes()).unwrap();
+    }
+  }
+
+  pub fn choose_op<P: TestOp>(rng: &mut ThreadRng, ops: &Vec<(P, f64)>) -> P {
+    let f = rng.next_f64();
+    let mut acc = 0.0;
+
+    for pair in ops.iter() {
+      acc += pair.1;
+      if acc > f {
+        return pair.0
+      }
+    }
+
+    panic!("Unable to select operation.");
+  }
+
+  pub fn gen_args(rng: &mut ThreadRng, n: usize) -> Vec<i32> {
+    let mut v = Vec::new();
+    for _ in 0..n {
+      v.push(rng.gen());
+    }
+    v
+  }
+
+  pub fn test_throughput<T: Tester>(mut tester: T, t_secs: f64) {
+    let mut rng = rand::thread_rng();
+    let mut n_ops = 0;
+    let duration = secs_to_duration(t_secs);
+    let start_time = Instant::now();
+
+    let elapsed = loop {
+      tester.execute_op(&mut rng);
+      n_ops += 1;
+
+      let d = start_time.elapsed();
+      if d >= duration {
+        break d
+      }
+    };
+
+    let ns_elapsed = duration_to_ns(elapsed);
+    let ns_per_op = ns_elapsed/(n_ops as f64);
+
+    println!("");
+    println!("Time elapsed (s): {}", ns_elapsed / 1_000_000_000.0);
+    println!("Ops completed:    {}", n_ops);
+    println!("Time per op (ns): {}", ns_per_op);
+  }
+
+  pub fn test_concurrent_correctness<T>(tester: T, t_secs: f64, n_threads: usize)
+  where T: ConcurrentTester, <T::L as Linearization>::P: Send + Sync {
+    let mut handles = Vec::new();
+    let mut log = Vec::new();
+
+    crossbeam::scope(|scope| {
+      for tid in 0..n_threads {
+        let mut tester = tester.clone();
+
+        let h = scope.spawn(move || {
+          let mut rng = rand::thread_rng();
+          let mut log = Vec::new();
+          let mut i = 0;
+          let duration = secs_to_duration(t_secs);
+          let start_time = Instant::now();
+
+          loop {
+            let a = tester.record_op(&mut rng, tid, i);
+            log.push(a);
+            i += 1;
+
+            let d = start_time.elapsed();
+            if d >= duration {
+              break;
+            }
+          }
+
+          log
+        });
+
+        handles.push(h);
+      }
+    });
+
+    for h in handles {
+      for entry in h.join() {
+        log.push(entry);
+      }
+    }
+
+    write_log(log.clone(), "log.txt");
+
+    let history = tester.lin().linearize(log).expect(
+      "No valid linearization found.");
+
+    write_history(&history, "history.txt");
+  }
+
+  pub fn test_concurrent_throughput<T>(tester: T, t_secs: f64, n_threads: usize)
+  where T: ConcurrentTester, <T::L as Linearization>::P: Send + Sync {
+    let mut handles = Vec::new();
+
+    crossbeam::scope(|scope| {
+      for _ in 0..n_threads {
+        let mut tester = tester.clone();
+
+        let h = scope.spawn(move || {
+          let mut rng = rand::thread_rng();
+          let mut n_ops = 0;
+          let duration = secs_to_duration(t_secs);
+          let start_time = Instant::now();
+
+          let elapsed = loop {
+            tester.execute_op(&mut rng);
+            n_ops += 1;
+
+            let d = start_time.elapsed();
+            if d >= duration {
+              break d
+            }
+          };
+
+          (elapsed, n_ops)
+        });
+
+        handles.push(h);
+      }
+    });
+
+    let mut ns_elapsed = 0.0;
+    let mut op_total = 0;
+    for h in handles {
+      let (elapsed, n_ops) = h.join();
+      ns_elapsed += duration_to_ns(elapsed);
+      op_total += n_ops;
+    }
+    let ns_per_op = ns_elapsed/(op_total as f64);
+
+    println!("");
+    println!("Time elapsed (s): {}", ns_elapsed / 1_000_000_000.0);
+    println!("Ops completed:    {}", op_total);
+    println!("Time per op (ns): {}", ns_per_op);
   }
 }
 
@@ -60,7 +241,7 @@ mod linearization_tests {
       let t2 = SystemTime::now();
       thread::sleep(d);
 
-      actions.push(StackAction::new(
+      actions.push(Action::new(
         (0, i),
         StackOp::Push(1),
         t1,
@@ -107,12 +288,12 @@ mod linearization_tests {
     let t4 = SystemTime::now();
     thread::sleep(d);
 
-    log.push(StackAction::new(
+    log.push(Action::new(
       (0, 0),
       StackOp::Pop(Some(1)),
       t1,
       t3));
-    log.push(StackAction::new(
+    log.push(Action::new(
       (1, 0),
       StackOp::Push(1),
       t2,
@@ -145,7 +326,7 @@ mod linearization_tests {
         op = StackOp::Pop(Some(i-1));
       }
 
-      actions.push(StackAction::new(
+      actions.push(Action::new(
         (i, 0),
         op,
         t1,
@@ -189,12 +370,12 @@ mod linearization_tests {
     let t4 = SystemTime::now();
     thread::sleep(d);
 
-    log.push(StackAction::new(
+    log.push(Action::new(
       (0, 0),
       StackOp::Pop(Some(1)),
       t1,
       t2));
-    log.push(StackAction::new(
+    log.push(Action::new(
       (1, 0),
       StackOp::Push(1),
       t3,
@@ -218,12 +399,12 @@ mod linearization_tests {
     let t4 = SystemTime::now();
     thread::sleep(d);
 
-    log.push(StackAction::new(
+    log.push(Action::new(
       (0, 0),
       StackOp::Pop(Some(1)),
       t1,
       t3));
-    log.push(StackAction::new(
+    log.push(Action::new(
       (1, 0),
       StackOp::Push(2),
       t2,
@@ -241,13 +422,113 @@ mod linearization_tests {
 
 #[cfg(test)]
 mod stack_tests {
-  use std::time::{Instant, SystemTime};
+  use std::time::SystemTime;
   use super::utilities::*;
   use super::stack;
   use super::stack::*;
   use super::linearization::*;
-  use crossbeam;
-  use rand::{self, Rng};
+  use rand::ThreadRng;
+
+  #[derive(Copy)]
+  #[derive(Clone)]
+  enum StackTestOp {
+    Push,
+    Pop,
+  }
+
+  impl TestOp for StackTestOp {}
+
+  struct StackTester<S> {
+    stack: S,
+    ops: Vec<(StackTestOp, f64)>,
+  }
+
+  impl<S> StackTester<S>
+  where S: Stack<i32> {
+    pub fn new(stack: S, p_pop: f64) -> Self {
+      Self {
+        stack: stack,
+        ops: vec![(StackTestOp::Push, 1.0 - p_pop),
+                  (StackTestOp::Pop,  p_pop)],
+      }
+    }
+  }
+
+  impl<S> Tester for StackTester<S>
+  where S: Stack<i32> {
+    fn execute_op(&mut self, rng: &mut ThreadRng) {
+      match choose_op(rng, &self.ops) {
+        StackTestOp::Push => {
+          self.stack.push(42);
+        }
+        StackTestOp::Pop => {
+          self.stack.pop();
+        }
+      }
+    }
+  }
+
+  #[derive(Clone)]
+  struct ConcurrentStackTester<S>
+  where S: ConcurrentStack<i32> {
+    stack: S,
+    ops: Vec<(StackTestOp, f64)>,
+  }
+
+  impl<S> ConcurrentStackTester<S>
+  where S: ConcurrentStack<i32> {
+    pub fn new(stack: S, p_pop: f64) -> Self {
+      Self {
+        stack: stack,
+        ops: vec![(StackTestOp::Push, 1.0 - p_pop),
+                  (StackTestOp::Pop,  p_pop)],
+      }
+    }
+  }
+
+  impl<S> ConcurrentTester for ConcurrentStackTester<S>
+  where S: ConcurrentStack<i32> {
+    type L = StackLinearization<i32>;
+
+    fn execute_op(&mut self, rng: &mut ThreadRng) {
+      match choose_op(rng, &self.ops) {
+        StackTestOp::Push => {
+          self.stack.push(42);
+        }
+        StackTestOp::Pop => {
+          self.stack.pop();
+        }
+      }
+    }
+
+    fn record_op(&mut self, rng: &mut ThreadRng, tid: usize, i: usize) -> Action<<Self::L as Linearization>::P> {
+      let start: SystemTime;
+      let stop: SystemTime;
+      let op: StackOp<i32>;
+
+      match choose_op(rng, &self.ops) {
+        StackTestOp::Push => {
+          let args = gen_args(rng, 1);
+          start = SystemTime::now();
+          self.stack.push(args[0]);
+          stop = SystemTime::now();
+          op = StackOp::Push(args[0]);
+        }
+        StackTestOp::Pop => {
+          start = SystemTime::now();
+          let r = self.stack.pop();
+          stop = SystemTime::now();
+          op = StackOp::Pop(r);
+        }
+      }
+
+      Action::new((tid, i), op, start, stop)
+    }
+
+    fn lin(&self) -> Self::L {
+      StackLinearization::new()
+    }
+  }
 
   fn test_stack_correctness<S: Stack<i32>>(mut stack: S) {
     assert_eq!(stack.pop(), None);
@@ -281,159 +562,21 @@ mod stack_tests {
     assert!(!stack.is_empty());
   }
 
-  fn test_stack_speed<S: Stack<i32>>(mut stack: S, t_secs: f64, p_pop: f64) {
-    let mut rng = rand::thread_rng();
-    let mut n_ops = 0;
-    let duration = secs_to_duration(t_secs);
-    let start_time = Instant::now();
-
-    let elapsed = loop {
-      let f = rng.next_f64();
-      if f < p_pop {
-        stack.push(42);
-      } else {
-        stack.pop();
-      }
-      n_ops += 1;
-
-      let d = start_time.elapsed();
-      if d >= duration {
-        break d
-      }
-    };
-
-    let ns_elapsed = duration_to_ns(elapsed);
-    let ns_per_op = ns_elapsed/(n_ops as f64);
-
-    println!("");
-    println!("Time elapsed (s): {}", ns_elapsed / 1_000_000_000.0);
-    println!("Ops completed:    {}", n_ops);
-    println!("Time per op (ns): {}", ns_per_op);
+  fn test_stack_speed<S: Stack<i32>>(stack: S, t_secs: f64, p_pop: f64) {
+    let tester = StackTester::new(stack, p_pop);
+    test_throughput(tester, t_secs);
   }
 
   fn test_stack_concurrent_correctness<S: ConcurrentStack<i32>>(
     stack: S, t_secs: f64, p_pop: f64, n_threads: usize) {
-    let mut handles = Vec::new();
-    let mut log = Vec::new();
-
-    crossbeam::scope(|scope| {
-      for tid in 0..n_threads {
-        let mut stack = stack.clone();
-
-        let h = scope.spawn(move || {
-          let mut rng = rand::thread_rng();
-          let mut log = Vec::new();
-          let mut i = 0;
-          let duration = secs_to_duration(t_secs);
-          let start_time = Instant::now();
-
-          loop {
-            let op: StackOp<i32>;
-            let op_start: SystemTime;
-            let op_stop: SystemTime;
-
-            let f = rng.next_f64();
-            if f > p_pop {
-              let i: i32 = rng.gen();
-
-              op_start = SystemTime::now();
-              stack.push(i);
-              op_stop = SystemTime::now();
-
-              op = StackOp::Push(i);
-            } else {
-              op_start = SystemTime::now();
-              let output = stack.pop();
-              op_stop = SystemTime::now();
-
-              op = StackOp::Pop(output);
-            }
-
-            log.push(StackAction::new(
-              (tid, i),
-              op,
-              op_start,
-              op_stop));
-            i += 1;
-
-            let d = start_time.elapsed();
-            if d >= duration {
-              break;
-            }
-          }
-
-          log
-        });
-
-        handles.push(h);
-      }
-    });
-
-    for h in handles {
-      for entry in h.join() {
-        log.push(entry);
-      }
-    }
-
-    write_log(log.clone(), "log.txt");
-
-    let mut slin = StackLinearization::new();
-    let history = slin.linearize(log).expect(
-      "No valid linearization found.");
-
-    write_history(&history, "history.txt");
+    let tester = ConcurrentStackTester::new(stack, p_pop);
+    test_concurrent_correctness(tester, t_secs, n_threads);
   }
 
   fn test_stack_concurrent_speed<S: ConcurrentStack<i32>>(
     stack: S, t_secs: f64, p_pop: f64, n_threads: usize) {
-    let mut handles = Vec::new();
-
-    crossbeam::scope(|scope| {
-      for _ in 0..n_threads {
-        let mut stack = stack.clone();
-
-        let h = scope.spawn(move || {
-          let mut rng = rand::thread_rng();
-          let mut n_ops = 0;
-          let duration = secs_to_duration(t_secs);
-          let start_time = Instant::now();
-
-          let elapsed = loop {
-            let f = rng.next_f64();
-            if f > p_pop {
-              stack.push(42);
-            } else {
-              stack.pop();
-            }
-
-            n_ops += 1;
-
-            let d = start_time.elapsed();
-            if d >= duration {
-              break d
-            }
-          };
-
-          (elapsed, n_ops)
-        });
-
-        handles.push(h);
-      }
-    });
-
-    let mut ns_elapsed = 0.0;
-    let mut op_total = 0;
-    for h in handles {
-      let (elapsed, n_ops) = h.join();
-      ns_elapsed += duration_to_ns(elapsed);
-      op_total += n_ops;
-    }
-    let ns_per_op = ns_elapsed/(op_total as f64);
-
-    println!("");
-    println!("Time elapsed (s): {}", ns_elapsed / 1_000_000_000.0);
-    println!("Ops completed:    {}", op_total);
-    println!("Time per op (ns): {}", ns_per_op);
+    let tester = ConcurrentStackTester::new(stack, p_pop);
+    test_concurrent_throughput(tester, t_secs, n_threads);
   }
 
   #[test]
@@ -512,12 +655,112 @@ mod stack_tests {
 
 #[cfg(test)]
 mod queue_tests {
-  use std::time::{Instant, SystemTime};
+  use std::time::SystemTime;
   use super::utilities::*;
   use super::queue::*;
   use super::linearization::*;
-  use crossbeam;
-  use rand::{self, Rng};
+  use rand::ThreadRng;
+
+  #[derive(Copy)]
+  #[derive(Clone)]
+  enum QueueTestOp {
+    Enq,
+    Deq
+  }
+
+  impl TestOp for QueueTestOp {}
+
+  struct QueueTester<Q> {
+    queue: Q,
+    ops: Vec<(QueueTestOp, f64)>,
+  }
+
+  impl<Q> QueueTester<Q>
+  where Q: Queue<i32> {
+    pub fn new(queue: Q, p_enq: f64) -> Self {
+      Self {
+        queue: queue,
+        ops: vec![(QueueTestOp::Enq, p_enq),
+                  (QueueTestOp::Deq, 1.0 - p_enq)],
+      }
+    }
+  }
+
+  impl<Q> Tester for QueueTester<Q>
+  where Q: Queue<i32> {
+    fn execute_op(&mut self, rng: &mut ThreadRng) {
+      match choose_op(rng, &self.ops) {
+        QueueTestOp::Enq => {
+          self.queue.enq(42);
+        }
+        QueueTestOp::Deq => {
+          self.queue.deq();
+        }
+      }
+    }
+  }
+
+  #[derive(Clone)]
+  struct ConcurrentQueueTester<Q>
+  where Q: ConcurrentQueue<i32> {
+    queue: Q,
+    ops: Vec<(QueueTestOp, f64)>,
+  }
+
+  impl<Q> ConcurrentQueueTester<Q>
+  where Q: ConcurrentQueue<i32> {
+    pub fn new(queue: Q, p_enq: f64) -> Self {
+      Self {
+        queue: queue,
+        ops: vec![(QueueTestOp::Enq, p_enq),
+                  (QueueTestOp::Deq, 1.0 - p_enq)],
+      }
+    }
+  }
+
+  impl<Q> ConcurrentTester for ConcurrentQueueTester<Q>
+  where Q: ConcurrentQueue<i32> {
+    type L = QueueLinearization<i32>;
+
+    fn execute_op(&mut self, rng: &mut ThreadRng) {
+      match choose_op(rng, &self.ops) {
+        QueueTestOp::Enq => {
+          self.queue.enq(42);
+        }
+        QueueTestOp::Deq => {
+          self.queue.deq();
+        }
+      }
+    }
+
+    fn record_op(&mut self, rng: &mut ThreadRng, tid: usize, i: usize) -> Action<<Self::L as Linearization>::P> {
+      let start: SystemTime;
+      let stop: SystemTime;
+      let op: QueueOp<i32>;
+
+      match choose_op(rng, &self.ops) {
+        QueueTestOp::Enq => {
+          let args = gen_args(rng, 1);
+          start = SystemTime::now();
+          self.queue.enq(args[0]);
+          stop = SystemTime::now();
+          op = QueueOp::Enq(args[0]);
+        }
+        QueueTestOp::Deq => {
+          start = SystemTime::now();
+          let r = self.queue.deq();
+          stop = SystemTime::now();
+          op = QueueOp::Deq(r);
+        }
+      }
+
+      Action::new((tid, i), op, start, stop)
+    }
+
+    fn lin(&self) -> Self::L {
+      QueueLinearization::new()
+    }
+  }
 
   fn test_queue_correctness<Q: Queue<i32>>(mut queue: Q) {
     assert_eq!(queue.deq(), None);
@@ -547,7 +790,7 @@ mod queue_tests {
     assert_eq!(queue.size(), 0);
     assert!(queue.is_empty());
 
-    let n = 10;
+    let n = 100;
     for i in 0..n {
       queue.enq(i);
     }
@@ -559,159 +802,21 @@ mod queue_tests {
     assert_eq!(queue.size(), 0);
   }
 
-  fn test_queue_speed<Q: Queue<i32>>(mut queue: Q, t_secs: f64, p_enq: f64) {
-    let mut rng = rand::thread_rng();
-    let mut n_ops = 0;
-    let duration = secs_to_duration(t_secs);
-    let start_time = Instant::now();
-
-    let elapsed = loop {
-      let f = rng.next_f64();
-      if f < p_enq {
-        queue.enq(42);
-      } else {
-        queue.deq();
-      }
-      n_ops += 1;
-
-      let d = start_time.elapsed();
-      if d >= duration {
-        break d
-      }
-    };
-
-    let ns_elapsed = duration_to_ns(elapsed);
-    let ns_per_op = ns_elapsed/(n_ops as f64);
-
-    println!("");
-    println!("Time elapsed (s): {}", ns_elapsed / 1_000_000_000.0);
-    println!("Ops completed:    {}", n_ops);
-    println!("Time per op (ns): {}", ns_per_op);
+  fn test_queue_speed<Q: Queue<i32>>(queue: Q, t_secs: f64, p_enq: f64) {
+    let tester = QueueTester::new(queue, p_enq);
+    test_throughput(tester, t_secs);
   }
 
   fn test_queue_concurrent_correctness<Q: ConcurrentQueue<i32>>(
-    queue: Q, t_secs: f64, p_enq: f64, n_threads: usize) {   
-    let mut handles = Vec::new();
-    let mut log = Vec::new();
-
-    crossbeam::scope(|scope| {
-      for tid in 0..n_threads {
-        let mut queue = queue.clone();
-
-        let h = scope.spawn(move || {
-          let mut rng = rand::thread_rng();
-          let mut log = Vec::new();
-          let mut i = 0;
-          let duration = secs_to_duration(t_secs);
-          let start_time = Instant::now();
-
-          loop {
-            let op: QueueOp<i32>;
-            let op_start: SystemTime;
-            let op_stop: SystemTime;
-
-            let f = rng.next_f64();
-            if f < p_enq {
-              let i: i32 = rng.gen();
-
-              op_start = SystemTime::now();
-              queue.enq(i);
-              op_stop = SystemTime::now();
-
-              op = QueueOp::Enq(i);
-            } else {
-              op_start = SystemTime::now();
-              let output = queue.deq();
-              op_stop = SystemTime::now();
-
-              op = QueueOp::Deq(output);
-            }
-
-            log.push(QueueAction::new(
-              (tid, i),
-              op,
-              op_start,
-              op_stop));
-            i += 1;
-
-            let d = start_time.elapsed();
-            if d >= duration {
-              break;
-            }
-          }
-
-          log
-        });
-
-        handles.push(h);
-      }
-    });
-
-    for h in handles {
-      for entry in h.join() {
-        log.push(entry);
-      }
-    }
-
-    write_log(log.clone(), "log.txt");
-
-    let mut qlin = QueueLinearization::new();
-    let history = qlin.linearize(log).expect(
-      "No valid linearization found.");
-
-    write_history(&history, "history.txt");
+    queue: Q, t_secs: f64, p_enq: f64, n_threads: usize) {
+    let tester = ConcurrentQueueTester::new(queue, p_enq);
+    test_concurrent_correctness(tester, t_secs, n_threads);
   }
 
   fn test_queue_concurrent_speed<Q: ConcurrentQueue<i32>>(
     queue: Q, t_secs: f64, p_enq: f64, n_threads: usize) {
-    let mut handles = Vec::new();
-
-    crossbeam::scope(|scope| {
-      for _ in 0..n_threads {
-        let mut queue = queue.clone();
-
-        let h = scope.spawn(move || {
-          let mut rng = rand::thread_rng();
-          let mut n_ops = 0;
-          let duration = secs_to_duration(t_secs);
-          let start_time = Instant::now();
-
-          let elapsed = loop {
-            let f = rng.next_f64();
-            if f < p_enq {
-              queue.enq(42);
-            } else {
-              queue.deq();
-            }
-
-            n_ops += 1;
-
-            let d = start_time.elapsed();
-            if d >= duration {
-              break d
-            }
-          };
-
-          (elapsed, n_ops)
-        });
-
-        handles.push(h);
-      }
-    });
-
-    let mut ns_elapsed = 0.0;
-    let mut op_total = 0;
-    for h in handles {
-      let (elapsed, n_ops) = h.join();
-      ns_elapsed += duration_to_ns(elapsed);
-      op_total += n_ops;
-    }
-    let ns_per_op = ns_elapsed/(op_total as f64);
-
-    println!("");
-    println!("Time elapsed (s): {}", ns_elapsed / 1_000_000_000.0);
-    println!("Ops completed:    {}", op_total);
-    println!("Time per op (ns): {}", ns_per_op);
+    let tester = ConcurrentQueueTester::new(queue, p_enq);
+    test_concurrent_throughput(tester, t_secs, n_threads);
   }
 
   #[test]
@@ -770,5 +875,305 @@ mod queue_tests {
   fn ms_queue_speed_concurrent() {
     test_queue_concurrent_speed(
       MSQueue::new(), 1.0, 0.5, 10);
+  }
+}
+
+
+///////////////////////////////////////////////////////////////////////////////
+//// Dictionary Tests
+///////////////////////////////////////////////////////////////////////////////
+
+#[cfg(test)]
+mod dict_tests {
+  use std::time::SystemTime;
+  use super::utilities::*;
+  use super::dict::*;
+  use super::linearization::*;
+  use rand::ThreadRng;
+
+  #[derive(Copy)]
+  #[derive(Clone)]
+  enum DictTestOp {
+    Get,
+    Put,
+    Remove,
+  }
+
+  impl TestOp for DictTestOp {}
+
+  struct DictTester<D> {
+    dict: D,
+    ops: Vec<(DictTestOp, f64)>,
+  }
+
+  impl<D> DictTester<D>
+  where D: Dict<i32,i32> {
+    pub fn new(dict: D, p_get: f64, p_put: f64) -> Self {
+      Self {
+        dict: dict,
+        ops: vec![(DictTestOp::Get,    p_get),
+                  (DictTestOp::Put,    p_put),
+                  (DictTestOp::Remove, 1.0 - p_get - p_put)],
+      }
+    }
+  }
+
+  impl<D> Tester for DictTester<D>
+  where D: Dict<i32,i32> {
+    fn execute_op(&mut self, rng: &mut ThreadRng) {
+      match choose_op(rng, &self.ops) {
+        DictTestOp::Get => {
+          let args = gen_args(rng, 1);
+          self.dict.get(&args[0]);
+        }
+        DictTestOp::Put => {
+          let args = gen_args(rng, 2);
+          self.dict.put(args[0], args[1]);
+        }
+        DictTestOp::Remove => {
+          let args = gen_args(rng, 1);
+          self.dict.remove(&args[0]);
+        }
+      }
+    }
+  }
+
+  #[derive(Clone)]
+  struct ConcurrentDictTester<D>
+  where D: ConcurrentDict<i32,i32> {
+    dict: D,
+    ops: Vec<(DictTestOp, f64)>,
+  }
+
+  impl<D> ConcurrentDictTester<D>
+  where D: ConcurrentDict<i32,i32> {
+    pub fn new(dict: D, p_get: f64, p_put: f64) -> Self {
+      Self {
+        dict: dict,
+        ops: vec![(DictTestOp::Get,    p_get),
+                  (DictTestOp::Put,    p_put),
+                  (DictTestOp::Remove, 1.0 - p_get - p_put)],
+      }
+    }
+  }
+
+  impl<D> ConcurrentTester for ConcurrentDictTester<D>
+  where D: ConcurrentDict<i32,i32> {
+    type L = DictLinearization<i32,i32>;
+
+    fn execute_op(&mut self, rng: &mut ThreadRng) {
+      match choose_op(rng, &self.ops) {
+        DictTestOp::Get => {
+          let args = gen_args(rng, 1);
+          self.dict.get(&args[0]);
+        }
+        DictTestOp::Put => {
+          let args = gen_args(rng, 2);
+          self.dict.put(args[0], args[1]);
+        }
+        DictTestOp::Remove => {
+          let args = gen_args(rng, 1);
+          self.dict.remove(&args[0]);
+        }
+      }
+    }
+
+    fn record_op(&mut self, rng: &mut ThreadRng, tid: usize, i: usize) -> Action<<Self::L as Linearization>::P> {
+      let start: SystemTime;
+      let stop: SystemTime;
+      let op: DictOp<i32,i32>;
+
+      match choose_op(rng, &self.ops) {
+        DictTestOp::Get => {
+          let args = gen_args(rng, 1);
+          start = SystemTime::now();
+          let r = self.dict.get(&args[0]);
+          stop = SystemTime::now();
+          op = DictOp::Get(args[0], r);
+        }
+        DictTestOp::Put => {
+          let args = gen_args(rng, 2);
+          start = SystemTime::now();
+          self.dict.put(args[0], args[1]);
+          stop = SystemTime::now();
+          op = DictOp::Put(args[0], args[1]);
+        }
+        DictTestOp::Remove => {
+          let args = gen_args(rng, 1);
+          start = SystemTime::now();
+          let r = self.dict.remove(&args[0]);
+          stop = SystemTime::now();
+          op = DictOp::Remove(args[0], r);
+        }
+      }
+
+      Action::new((tid, i), op, start, stop)
+    }
+
+    fn lin(&self) -> Self::L {
+      DictLinearization::new()
+    }
+  }
+
+  fn test_dict_correctness<D: Dict<i32,i32>>(mut dict: D) {
+    assert_eq!(dict.get(&0), None);
+    assert_eq!(dict.size(), 0);
+    assert!(dict.is_empty());
+    assert_eq!(dict.get(&1), None);
+
+    dict.put(0, 1);
+
+    assert_eq!(dict.get(&0), Some(1));
+    assert_eq!(dict.size(), 1);
+    assert!(!dict.is_empty());
+
+    assert_eq!(dict.remove(&0), Some(1));
+
+    assert_eq!(dict.get(&0), None);
+    assert_eq!(dict.size(), 0);
+    assert!(dict.is_empty());
+    assert_eq!(dict.get(&1), None);
+
+    dict.put(0, 2);
+
+    assert_eq!(dict.get(&0), Some(2));
+    assert_eq!(dict.size(), 1);
+    assert!(!dict.is_empty());
+
+    dict.put(0, 3);
+
+    assert_eq!(dict.get(&0), Some(3));
+    assert_eq!(dict.size(), 1);
+    assert!(!dict.is_empty());
+
+    dict.put(1, 0);
+
+    assert_eq!(dict.get(&0), Some(3));
+    assert_eq!(dict.get(&1), Some(0));
+    assert_eq!(dict.size(), 2);
+    assert!(!dict.is_empty());
+
+    dict.put(1, 1);
+
+    assert_eq!(dict.get(&0), Some(3));
+    assert_eq!(dict.get(&1), Some(1));
+    assert_eq!(dict.size(), 2);
+    assert!(!dict.is_empty());
+
+    assert_eq!(dict.remove(&1), Some(1));
+
+    assert_eq!(dict.get(&0), Some(3));
+    assert_eq!(dict.get(&1), None);
+    assert_eq!(dict.size(), 1);
+    assert!(!dict.is_empty());
+
+    dict.put(1, 5);
+
+    assert_eq!(dict.get(&0), Some(3));
+    assert_eq!(dict.get(&1), Some(5));
+    assert_eq!(dict.size(), 2);
+    assert!(!dict.is_empty());
+
+    assert_eq!(dict.remove(&2), None);
+
+    assert_eq!(dict.get(&0), Some(3));
+    assert_eq!(dict.get(&1), Some(5));
+    assert_eq!(dict.get(&2), None);
+    assert_eq!(dict.size(), 2);
+    assert!(!dict.is_empty());
+
+    assert_eq!(dict.remove(&0), Some(3));
+    assert_eq!(dict.remove(&1), Some(5));
+
+    assert_eq!(dict.get(&0), None);
+    assert_eq!(dict.get(&1), None);
+    assert_eq!(dict.get(&2), None);
+    assert_eq!(dict.size(), 0);
+    assert!(dict.is_empty());
+
+    let n = 100;
+
+    for i in 0..n {
+      dict.put(i, i+1);
+    }
+    assert_eq!(dict.size(), n as usize);
+    assert!(!dict.is_empty());
+    for i in 0..n {
+      assert_eq!(dict.get(&i), Some(i+1));
+    }
+
+    for i in n..2*n {
+      assert_eq!(dict.remove(&i), None);
+    }
+    for i in 0..n {
+      assert_eq!(dict.remove(&i), Some(i+1));
+    }
+    assert_eq!(dict.size(), 0);
+    assert!(dict.is_empty());
+    for i in 0..n {
+      assert_eq!(dict.get(&i), None);
+    }
+  }
+
+  fn test_dict_throughput<D: Dict<i32,i32>>(
+    dict: D, t_secs: f64, p_get: f64, p_put: f64) {
+    let tester = DictTester::new(dict, p_get, p_put);
+    test_throughput(tester, t_secs);
+  }
+
+  fn test_dict_concurrent_correctness<D: ConcurrentDict<i32,i32>>(
+    dict: D, t_secs: f64, p_get: f64, p_put: f64, n_threads: usize) {
+    let tester = ConcurrentDictTester::new(dict, p_get, p_put);
+    test_concurrent_correctness(tester, t_secs, n_threads);
+  }
+
+  fn test_dict_concurrent_throughput<D: ConcurrentDict<i32,i32>>(
+    dict: D, t_secs: f64, p_get: f64, p_put: f64, n_threads: usize) {
+    let tester = ConcurrentDictTester::new(dict, p_get, p_put);
+    test_concurrent_throughput(tester, t_secs, n_threads);
+  }
+
+  #[test]
+  fn ht_dict_correctness() {
+    test_dict_correctness(HtDict::new());
+  }
+
+  #[test]
+  fn ht_dict_speed() {
+    test_dict_throughput(HtDict::new(), 1.0, 0.33, 0.33);
+  }
+
+  #[test]
+  fn coarse_lock_ht_dict_correctness() {
+    test_dict_correctness(CoarseLockHtDict::new());
+  }
+
+  #[test]
+  fn coarse_lock_ht_dict_correctness_concurrent() {
+    for _ in 0..10 {
+      test_dict_concurrent_correctness(
+        CoarseLockHtDict::new(), 0.0001, 0.33, 0.33, 10);
+    }
+  }
+
+  #[test]
+  fn coarse_lock_ht_dict_speed() {
+    test_dict_throughput(CoarseLockHtDict::new(), 1.0, 0.33, 0.33);
+  }
+
+  #[test]
+  fn coarse_lock_ht_dict_speed_concurrent() {
+    test_dict_concurrent_throughput(
+      CoarseLockHtDict::new(), 1.0, 0.33, 0.33, 10);
+  }
+
+  #[test]
+  fn skiplist_dict_correctness() {
+    test_dict_correctness(Skiplist::new());
+  }
+
+  #[test]
+  fn skiplist_dict_speed() {
+    test_dict_throughput(Skiplist::new(), 1.0, 0.33, 0.33);
   }
 }

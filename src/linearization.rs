@@ -8,44 +8,41 @@
 ///////////////////////////////////////////////////////////////////////////////
 
 use std::time::SystemTime;
-use std::fs::File;
-use std::io::Write;
 use std::fmt::Debug;
-use std::collections::VecDeque;
+//use std::fs::File;
+//use std::io::Write;
+use std::hash::Hash;
+use std::collections::{VecDeque, HashMap};
 
 
 ///////////////////////////////////////////////////////////////////////////////
 //// Trait Definitions
 ///////////////////////////////////////////////////////////////////////////////
 
-pub trait Action: PartialEq + Copy + Clone + Debug {
-  fn get_id(&self) -> (usize, usize);
-  fn get_start_time(&self) -> SystemTime;
-  fn get_stop_time(&self) -> SystemTime;
-}
+pub trait Op : Copy + Clone + Debug {}
 
 pub trait Linearization
-where Self::A: Action {
-  type A;
+where Self::P: Op {
+  type P;
 
   fn new() -> Self;
-  fn push(&mut self, a: Self::A);
+  fn push(&mut self, a: Action<Self::P>);
   fn pop(&mut self);
-  fn peek(&self) -> &Self::A;
-  fn contains(&self, a: &Self::A) -> bool;
+  fn peek(&self) -> &Action<Self::P>;
+  fn contains(&self, a: &Action<Self::P>) -> bool;
   fn count(&self) -> usize;
-  fn is_consistent_with(&self, a: &Self::A) -> bool;
-  fn get_history(&self) -> Vec<Self::A>;
+  fn is_consistent_with(&self, a: &Action<Self::P>) -> bool;
+  fn get_history(&self) -> Vec<Action<Self::P>>;
 
-  fn linearize(&mut self, mut log: Vec<Self::A>) -> Option<Vec<Self::A>> {
+  fn linearize(&mut self, mut log: Vec<Action<Self::P>>) -> Option<Vec<Action<Self::P>>> {
     log.sort_by(|a1, a2| {
-      a1.get_start_time().cmp(&a2.get_start_time())
+      a1.get_start().cmp(&a2.get_start())
     });
 
     self.dfs(&log)
   }
 
-  fn dfs(&mut self, log: &Vec<Self::A>) -> Option<Vec<Self::A>> {
+  fn dfs(&mut self, log: &Vec<Action<Self::P>>) -> Option<Vec<Action<Self::P>>> {
     let mut alists = Vec::new();
     let mut actions = self.gen(log);
     let mut i = 0;
@@ -81,30 +78,30 @@ where Self::A: Action {
     None
   }
 
-  fn pred(&self, log: &Vec<Self::A>) -> bool {
+  fn pred(&self, log: &Vec<Action<Self::P>>) -> bool {
     self.count() == log.len()
   }
 
-  fn gen(&self, log: &Vec<Self::A>) -> Vec<Self::A> {
+  fn gen(&self, log: &Vec<Action<Self::P>>) -> Vec<Action<Self::P>> {
     let mut actions = Vec::new();
 
     let i_first = log.iter().position(|a| {
         self.count() == 0 ||
-          (a.get_stop_time() >= self.peek().get_start_time() &&
+          (a.get_stop() >= self.peek().get_start() &&
            !self.contains(&a))
       });
 
     if let Some(i) = i_first {
-      let mut first_stop_time = log[i].get_stop_time();
+      let mut first_stop_time = log[i].get_stop();
 
       let mut j = i;
       while j < log.len() {
         let a = log[j];
 
-        if a.get_start_time() <= first_stop_time {
+        if a.get_start() <= first_stop_time {
           if !self.contains(&a) {
-            if a.get_stop_time() < first_stop_time {
-              first_stop_time = a.get_stop_time();
+            if a.get_stop() < first_stop_time {
+              first_stop_time = a.get_stop();
             }
             if self.is_consistent_with(&a) {
               actions.push(a);
@@ -124,27 +121,52 @@ where Self::A: Action {
 
 
 ///////////////////////////////////////////////////////////////////////////////
-//// Utilities
+//// Action
 ///////////////////////////////////////////////////////////////////////////////
 
-pub fn write_log<A: Action>(mut log: Vec<A>, name: &str) {
-  log.sort_by(|a1, a2| {
-    a1.get_start_time().cmp(&a2.get_start_time())
-  });
+pub type ActionID = (usize, usize);
 
-  let mut f = File::create(name).unwrap();
-  for a in log.iter() {
-    f.write_all(format!("{:?}\n", a).as_bytes()).unwrap();
+#[derive(Debug)]
+#[derive(Copy)]
+#[derive(Clone)]
+pub struct Action<P>
+where P: Op {
+  id: ActionID,
+  op: P,
+  start: SystemTime,
+  stop: SystemTime,
+}
+
+impl<P> Action<P>
+where P: Op {
+  pub fn new(id: ActionID, op: P, start: SystemTime, stop: SystemTime) -> Self {
+    Self {
+      id: id,
+      op: op,
+      start: start,
+      stop: stop,
+    }
+  }
+
+  pub fn get_id(&self) -> ActionID {
+    self.id
+  }
+
+  pub fn get_start(&self) -> SystemTime {
+    self.start
+  }
+
+  pub fn get_stop(&self) -> SystemTime {
+    self.stop
   }
 }
 
-pub fn write_history<A: Action>(history: &Vec<A>, name: &str) {
-  let mut f = File::create(name).unwrap();
-
-  for a in history.iter() {
-    f.write_all(format!("{:?}\n", a).as_bytes()).unwrap();
+impl<P> PartialEq for Action<P>
+where P: Op {
+  fn eq(&self, other: &Self) -> bool {
+    self.get_id() == other.get_id()
   }
-} 
+}
 
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -160,66 +182,20 @@ where T: Copy + Clone + Debug {
   Pop(Option<T>),
 }
 
-#[derive(Debug)]
-#[derive(Copy)]
-#[derive(Clone)]
-pub struct StackAction<T>
-where T: Copy + Clone + Debug {
-  id: (usize, usize),
-  op: StackOp<T>,
-  start_time: SystemTime,
-  stop_time: SystemTime,
-}
-
-impl<T> StackAction<T>
-where T: Copy + Clone + Debug {
-  pub fn new(
-    id: (usize, usize), 
-    op: StackOp<T>, 
-    start_time: SystemTime, 
-    stop_time: SystemTime) -> Self {
-    Self {
-      id: id,
-      op: op,
-      start_time: start_time,
-      stop_time: stop_time,
-    }
-  }
-}
-
-impl<T> PartialEq for StackAction<T>
-where T: Copy + Clone + Debug {
-  fn eq(&self, other: &Self) -> bool {
-    self.get_id() == other.get_id()
-  }
-}
-
-impl<T> Action for StackAction<T>
-where T: Copy + Clone + Debug {
-  fn get_id(&self) -> (usize, usize) {
-    self.id
-  }
-
-  fn get_start_time(&self) -> SystemTime {
-    self.start_time
-  }
-
-  fn get_stop_time(&self) -> SystemTime {
-    self.stop_time
-  }
-}
+impl<T> Op for StackOp<T> 
+where T: Copy + Clone + Debug {}
 
 #[derive(Clone)]
 pub struct StackLinearization<T> 
 where T: Copy + Clone + Debug {
   current: Vec<T>,
   old: Vec<T>,
-  path: Vec<StackAction<T>>,
+  path: Vec<Action<StackOp<T>>>,
 }
 
 impl<T> Linearization for StackLinearization<T>
 where T: Copy + Clone + Eq + Debug {
-  type A = StackAction<T>;
+  type P = StackOp<T>;
 
   fn new() -> Self {
     Self {
@@ -229,7 +205,7 @@ where T: Copy + Clone + Eq + Debug {
     }
   }
 
-  fn push(&mut self, a: Self::A) {
+  fn push(&mut self, a: Action<Self::P>) {
     match a.op {
       StackOp::Push(v) => {
         self.current.push(v);
@@ -264,11 +240,11 @@ where T: Copy + Clone + Eq + Debug {
     }
   }
 
-  fn peek(&self) -> &Self::A {
+  fn peek(&self) -> &Action<Self::P> {
     &self.path[self.path.len() - 1]
   }
 
-  fn contains(&self, a: &Self::A) -> bool {
+  fn contains(&self, a: &Action<Self::P>) -> bool {
     self.path.contains(a)
   }
 
@@ -276,7 +252,7 @@ where T: Copy + Clone + Eq + Debug {
     self.path.len()
   }
 
-  fn is_consistent_with(&self, a: &Self::A) -> bool {
+  fn is_consistent_with(&self, a: &Action<Self::P>) -> bool {
     match a.op {
       StackOp::Push(_) => true,
       StackOp::Pop(r) => {
@@ -291,7 +267,7 @@ where T: Copy + Clone + Eq + Debug {
     }
   }
 
-  fn get_history(&self) -> Vec<Self::A> {
+  fn get_history(&self) -> Vec<Action<Self::P>> {
     self.path.clone()
   }
 }
@@ -310,65 +286,19 @@ where T: Copy + Clone + Debug {
   Deq(Option<T>),
 }
 
-#[derive(Debug)]
-#[derive(Copy)]
-#[derive(Clone)]
-pub struct QueueAction<T>
-where T: Copy + Clone + Debug {
-  id: (usize, usize),
-  op: QueueOp<T>,
-  start_time: SystemTime,
-  stop_time: SystemTime,
-}
-
-impl<T> QueueAction<T>
-where T: Copy + Clone + Debug {
-  pub fn new(
-    id: (usize, usize), 
-    op: QueueOp<T>, 
-    start_time: SystemTime, 
-    stop_time: SystemTime) -> Self {
-    Self {
-      id: id,
-      op: op,
-      start_time: start_time,
-      stop_time: stop_time,
-    }
-  }
-}
-
-impl<T> PartialEq for QueueAction<T>
-where T: Copy + Clone + Debug {
-  fn eq(&self, other: &Self) -> bool {
-    self.get_id() == other.get_id()
-  }
-}
-
-impl<T> Action for QueueAction<T>
-where T: Copy + Clone + Debug {
-  fn get_id(&self) -> (usize, usize) {
-    self.id
-  }
-
-  fn get_start_time(&self) -> SystemTime {
-    self.start_time
-  }
-
-  fn get_stop_time(&self) -> SystemTime {
-    self.stop_time
-  }
-}
+impl<T> Op for QueueOp<T>
+where T: Copy + Clone + Debug {}
 
 #[derive(Clone)]
 pub struct QueueLinearization<T> 
 where T: Copy + Clone + Debug {
   state: VecDeque<T>,
-  path: Vec<QueueAction<T>>,
+  path: Vec<Action<QueueOp<T>>>,
 }
 
 impl<T> Linearization for QueueLinearization<T>
 where T: Copy + Clone + Eq + Debug {
-  type A = QueueAction<T>;
+  type P = QueueOp<T>;
 
   fn new() -> Self {
     Self {
@@ -377,7 +307,7 @@ where T: Copy + Clone + Eq + Debug {
     }
   }
 
-  fn push(&mut self, a: Self::A) {
+  fn push(&mut self, a: Action<Self::P>) {
     match a.op {
       QueueOp::Enq(v) => {
         self.state.push_back(v);
@@ -405,11 +335,11 @@ where T: Copy + Clone + Eq + Debug {
     });
   }
 
-  fn peek(&self) -> &Self::A {
+  fn peek(&self) -> &Action<Self::P> {
     &self.path[self.path.len() - 1]
   }
 
-  fn contains(&self, a: &Self::A) -> bool {
+  fn contains(&self, a: &Action<Self::P>) -> bool {
     self.path.contains(a)
   }
 
@@ -417,7 +347,7 @@ where T: Copy + Clone + Eq + Debug {
     self.path.len()
   }
 
-  fn is_consistent_with(&self, a: &Self::A) -> bool {
+  fn is_consistent_with(&self, a: &Action<Self::P>) -> bool {
     match a.op {
       QueueOp::Enq(_) => true,
       QueueOp::Deq(r) => {
@@ -438,7 +368,111 @@ where T: Copy + Clone + Eq + Debug {
     }
   }
 
-  fn get_history(&self) -> Vec<Self::A> {
+  fn get_history(&self) -> Vec<Action<Self::P>> {
+    self.path.clone()
+  }
+}
+
+
+///////////////////////////////////////////////////////////////////////////////
+//// Dictionary Linearization
+///////////////////////////////////////////////////////////////////////////////
+
+#[derive(Debug)]
+#[derive(Copy)]
+#[derive(Clone)]
+pub enum DictOp<K,V> 
+where K: Copy + Clone + Debug, V: Copy + Clone + Debug {
+  Get(K, Option<V>),
+  Put(K, V),
+  Remove(K, Option<V>),
+}
+
+impl<K,V> Op for DictOp<K,V> 
+where K: Copy + Clone + Debug, V: Copy + Clone + Debug {}
+
+#[derive(Clone)]
+pub struct DictLinearization<K,V> 
+where K: Copy + Clone + Debug + Eq + Hash, V: Copy + Clone + Debug + Eq {
+  state: HashMap<K,V>,
+  path: Vec<Action<DictOp<K,V>>>,
+}
+
+impl<K,V> Linearization for DictLinearization<K,V>
+where K: Copy + Clone + Debug + Eq + Hash, V: Copy + Clone + Debug + Eq {
+  type P = DictOp<K,V>;
+
+  fn new() -> Self {
+    Self {
+      state: HashMap::new(),
+      path: Vec::new(),
+    }
+  }
+
+  fn push(&mut self, a: Action<Self::P>) {
+    match a.op {
+      DictOp::Get(k,r) => {
+        assert_eq!(self.state.get(&k), r.as_ref());
+      }
+      DictOp::Put(k,v) => {
+        self.state.insert(k,v);
+      }
+      DictOp::Remove(k,r) => {
+        assert_eq!(self.state.get(&k), r.as_ref());
+        self.state.remove(&k);
+      }
+    }
+
+    self.path.push(a);
+  }
+
+  fn pop(&mut self) {
+    self.path.pop().map(|a| {
+      match a.op {
+        DictOp::Get(k,r) => {
+          assert_eq!(self.state.get(&k), r.as_ref());
+        }
+        DictOp::Put(k,v) => {
+          assert_eq!(self.state.get(&k), Some(&v));
+          self.state.remove(&k);
+        }
+        DictOp::Remove(k,r) => {
+          assert_eq!(self.state.get(&k), None);
+          r.map(|v| {
+            self.state.insert(k,v);
+          });
+        }
+      }
+    });
+  }
+
+  fn peek(&self) -> &Action<Self::P> {
+    &self.path[self.path.len() - 1]
+  }
+
+  fn contains(&self, a: &Action<Self::P>) -> bool {
+    self.path.contains(a)
+  }
+
+  fn count(&self) -> usize {
+    self.path.len()
+  }
+
+  fn is_consistent_with(&self, a: &Action<Self::P>) -> bool {
+    match a.op {
+      DictOp::Get(k,r) => {
+        self.state.get(&k) == r.as_ref()
+      }
+      DictOp::Put(_,_) => {
+        true
+      }
+      DictOp::Remove(k,r) => {
+        self.state.get(&k) == r.as_ref()
+      }
+    }
+  }
+
+  fn get_history(&self) -> Vec<Action<Self::P>> {
     self.path.clone()
   }
 }
