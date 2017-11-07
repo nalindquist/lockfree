@@ -216,7 +216,7 @@ mod utilities {
 mod linearization_tests {
   use std::thread;
   use std::time::{SystemTime, Duration};
-  use super::linearization::*;
+  use super::linearization::*;  
 
   #[test]
   fn empty_linearization_test() {
@@ -1181,5 +1181,29 @@ mod dict_tests {
   #[test]
   fn skiplist_dict_speed() {
     test_dict_throughput(Skiplist::new(), 1.0, 0.33, 0.33);
+  }
+
+  #[test]
+  fn lockfree_skiplist_dict_correctness() {
+    test_dict_correctness(LockfreeSkiplist::new());
+  }
+
+  #[test]
+  fn lockfree_skiplist_dict_correctness_concurrent() {
+    for _ in 0..10 {
+      test_dict_concurrent_correctness(
+        LockfreeSkiplist::new(), 0.0001, 0.70, 0.20, 10);
+    }
+  }
+
+  #[test]
+  fn lockfree_skiplist_dict_speed() {
+    test_dict_throughput(LockfreeSkiplist::new(), 1.0, 0.33, 0.33);
+  }
+
+  #[test]
+  fn lockfree_skiplist_dict_speed_concurrent() {
+    test_dict_concurrent_throughput(
+      LockfreeSkiplist::new(), 1.0, 0.33, 0.33, 10);
   }
 }

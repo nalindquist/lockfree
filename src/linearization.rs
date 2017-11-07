@@ -55,6 +55,7 @@ where Self::P: Op {
         let a = actions[i];
 
         if !self.contains(&a) {
+          //println!("PUSH {:?}\n", a.get_id());
           //f.write_all(format!("PUSH {:?}\n", a.get_id()).as_bytes()).unwrap();
           self.push(a);
           alists.push((actions, i + 1));
@@ -66,6 +67,7 @@ where Self::P: Op {
       } else if self.count() == 0 {
         break;
       } else {
+        //println!("POP");
         //f.write_all(format!("POP\n").as_bytes()).unwrap();
         self.pop();
 

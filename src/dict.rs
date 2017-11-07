@@ -9,8 +9,10 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::{Mutex, Arc};
+use std::sync::atomic::Ordering;
 use std::mem;
 use rand::{self, Rng, ThreadRng};
+use crossbeam::epoch::{self, MarkableAtomic, Owned, Shared};
 
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -313,3 +315,158 @@ where K: Eq + Hash + Send + Sync, V: Clone + Send + Sync {}
 //// LockfreeSkiplist
 ///////////////////////////////////////////////////////////////////////////////
 
+const MAX_LEVELS: usize = 6;
+
+fn get_toplevel() -> usize {
+  let mut n = 0;
+  let mut max = 1.0;
+
+  while rand::thread_rng().next_f64() <= max && n < MAX_LEVELS {
+    n += 1;
+    max /= 2.0;
+  }
+
+  n
+}
+
+struct LockfreeNode<K,V> {
+  key: K,
+  value: V,
+  is_tail: bool,
+  next: Vec<MarkableAtomic<LockfreeNode<K,V>>>,
+}
+
+impl<K,V> LockfreeNode<K,V>
+where K: Eq + Ord, V: Clone {
+  pub fn new_head() -> Self {
+    let mut next = Vec::new();
+    for _ in 0..MAX_LEVELS {
+      next.push(MarkableAtomic::null());
+    }
+
+    unsafe {
+      LockfreeNode {
+        key: mem::uninitialized(),
+        value: mem::uninitialized(),
+        is_tail: false,
+        next: next,
+      }
+    }
+  }
+
+  pub fn new_tail() -> Self {
+    let mut next = Vec::new();
+    for _ in 0..MAX_LEVELS {
+      next.push(MarkableAtomic::null());
+    }
+
+    unsafe {
+      LockfreeNode {
+        key: mem::uninitialized(),
+        value: mem::uninitialized(),
+        is_tail: true,
+        next: next,
+      }
+    }
+  }
+}
+
+pub struct LockfreeSkiplist<K,V> {
+  head: Arc<MarkableAtomic<LockfreeNode<K,V>>>,
+  tail: Arc<MarkableAtomic<LockfreeNode<K,V>>>,
+}
+
+impl<K,V> Dict<K,V> for LockfreeSkiplist<K,V>
+where K: Eq + Ord, V: Clone {
+  fn new() -> Self {
+    let guard = epoch::pin();
+
+    let head = LockfreeNode::new_head();
+    let tail_atomic = MarkableAtomic::new(LockfreeNode::new_tail(), false);
+
+    let tail_shared = tail_atomic.load_shared(Ordering::Relaxed, &guard);
+    for i in 0..MAX_LEVELS {
+      head.next[i].store_shared(tail_shared, false, Ordering::Relaxed);
+    }
+
+    Self {
+      head: Arc::new(MarkableAtomic::new(head, false)),
+      tail: Arc::new(tail_atomic),
+    }
+  }
+
+  fn get(&self, k: &K) -> Option<V> {
+    let guard = epoch::pin();
+
+    let mut pred = self.head.load_shared(Ordering::SeqCst, &guard).unwrap();
+    let mut i = ((*pred).next.len() - 1) as i32;
+    let mut curr = (*pred).next[i as usize]
+                     .load_shared(Ordering::SeqCst, &guard)
+                     .unwrap();
+    let mut succ;
+    let mut mark;
+
+    while i >= 0 {
+      curr = (*pred).next[i as usize]
+               .load_shared(Ordering::SeqCst, &guard)
+               .unwrap();
+
+      loop {
+        let pair = (*curr).next[i as usize]
+                     .load(Ordering::SeqCst, &guard);
+        succ = pair.0;
+        mark = pair.1;
+        while mark {
+          curr = succ.unwrap();
+          let pair = (*curr).next[i as usize]
+                       .load(Ordering::SeqCst, &guard);
+          succ = pair.0;
+          mark = pair.1;
+        }
+        if !(*curr).is_tail && (*curr).key < *k {
+          pred = curr;
+          curr = succ.unwrap();
+        } else {
+          break;
+        }
+      }
+
+      i -= 1;
+    }
+
+    if !(*curr).is_tail && (*curr).key == *k {
+      Some((*curr).value.clone())
+    } else {
+      None
+    }
+  }
+
+  fn put(&mut self, k: K, v: V) -> Option<V> {
+    None
+  }
+
+  fn remove(&mut self, k: &K) -> Option<V> {
+    None
+  }
+
+  fn is_empty(&self) -> bool {
+    false
+  }
+
+  fn size(&self) -> usize {
+    0
+  }
+}
+
+impl<K,V> Clone for LockfreeSkiplist<K,V>
+where K: Eq + Ord, V: Clone {
+  fn clone(&self) -> Self {
+    Self {
+      head: self.head.clone(),
+      tail: self.tail.clone(),
+    }
+  }
+}
+
+impl<K,V> ConcurrentDict<K,V> for LockfreeSkiplist<K,V>
+where K: Eq + Ord + Send + Sync, V: Clone + Send + Sync {}
