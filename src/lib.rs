@@ -903,14 +903,18 @@ mod dict_tests {
 
   struct DictTester<D> {
     dict: D,
+    n: usize,
+    i: i32,
     ops: Vec<(DictTestOp, f64)>,
   }
 
   impl<D> DictTester<D>
   where D: Dict<i32,i32> {
-    pub fn new(dict: D, p_get: f64, p_put: f64) -> Self {
+    pub fn new(dict: D, n: usize, p_get: f64, p_put: f64) -> Self {
       Self {
         dict: dict,
+        n: n,
+        i: 0,
         ops: vec![(DictTestOp::Get,    p_get),
                   (DictTestOp::Put,    p_put),
                   (DictTestOp::Remove, 1.0 - p_get - p_put)],
@@ -923,18 +927,17 @@ mod dict_tests {
     fn execute_op(&mut self, rng: &mut ThreadRng) {
       match choose_op(rng, &self.ops) {
         DictTestOp::Get => {
-          let args = gen_args(rng, 1);
-          self.dict.get(&args[0]);
+          self.dict.get(&self.i);
         }
         DictTestOp::Put => {
-          let args = gen_args(rng, 2);
-          self.dict.put(args[0], args[1]);
+          self.dict.put(self.i, 42);
         }
         DictTestOp::Remove => {
-          let args = gen_args(rng, 1);
-          self.dict.remove(&args[0]);
+          self.dict.remove(&self.i);
         }
       }
+
+      self.i = (self.i+1) % self.n as i32;
     }
   }
 
@@ -942,14 +945,18 @@ mod dict_tests {
   struct ConcurrentDictTester<D>
   where D: ConcurrentDict<i32,i32> {
     dict: D,
+    n: usize,
+    i: i32,
     ops: Vec<(DictTestOp, f64)>,
   }
 
   impl<D> ConcurrentDictTester<D>
   where D: ConcurrentDict<i32,i32> {
-    pub fn new(dict: D, p_get: f64, p_put: f64) -> Self {
+    pub fn new(dict: D, n: usize, p_get: f64, p_put: f64) -> Self {
       Self {
         dict: dict,
+        n: n,
+        i: 0,
         ops: vec![(DictTestOp::Get,    p_get),
                   (DictTestOp::Put,    p_put),
                   (DictTestOp::Remove, 1.0 - p_get - p_put)],
@@ -964,24 +971,22 @@ mod dict_tests {
     fn execute_op(&mut self, rng: &mut ThreadRng) {
       match choose_op(rng, &self.ops) {
         DictTestOp::Get => {
-          let args = gen_args(rng, 1);
-          let k = args[0].abs() % 50;
-          self.dict.get(&k);
+          self.dict.get(&self.i);
         }
         DictTestOp::Put => {
-          let args = gen_args(rng, 2);
-          let k = args[0].abs() % 50;
-          self.dict.put(k, args[1]);
+          self.dict.put(self.i, 42);
         }
         DictTestOp::Remove => {
-          let args = gen_args(rng, 1);
-          let k = args[0].abs() % 50;
-          self.dict.remove(&k);
+          self.dict.remove(&self.i);
         }
       }
+
+      self.i = (self.i+1) % self.n as i32;
     }
 
-    fn record_op(&mut self, rng: &mut ThreadRng, tid: usize, i: usize) -> Action<<Self::L as Linearization>::P> {
+    fn record_op(&mut self, rng: &mut ThreadRng, tid: usize, i: usize) 
+                 -> Action<<Self::L as Linearization>::P> 
+    {
       let start: SystemTime;
       let stop: SystemTime;
       let op: DictOp<i32,i32>;
@@ -989,7 +994,7 @@ mod dict_tests {
       match choose_op(rng, &self.ops) {
         DictTestOp::Get => {
           let args = gen_args(rng, 1);
-          let k = args[0].abs() % 50;
+          let k = args[0].abs() % self.n as i32;
           start = SystemTime::now();
           let r = self.dict.get(&k);
           stop = SystemTime::now();
@@ -997,7 +1002,7 @@ mod dict_tests {
         }
         DictTestOp::Put => {
           let args = gen_args(rng, 2);
-          let k = args[0].abs() % 50;
+          let k = args[0].abs() % self.n as i32;
           start = SystemTime::now();
           let r = self.dict.put(k, args[1]);
           stop = SystemTime::now();
@@ -1005,7 +1010,7 @@ mod dict_tests {
         }
         DictTestOp::Remove => {
           let args = gen_args(rng, 1);
-          let k = args[0].abs() % 50;
+          let k = args[0].abs() % self.n as i32;
           start = SystemTime::now();
           let r = self.dict.remove(&k);
           stop = SystemTime::now();
@@ -1122,20 +1127,20 @@ mod dict_tests {
   }
 
   fn test_dict_throughput<D: Dict<i32,i32>>(
-    dict: D, t_secs: f64, p_get: f64, p_put: f64) {
-    let tester = DictTester::new(dict, p_get, p_put);
+    dict: D, n: usize, t_secs: f64, p_get: f64, p_put: f64) {
+    let tester = DictTester::new(dict, n, p_get, p_put);
     test_throughput(tester, t_secs);
   }
 
   fn test_dict_concurrent_correctness<D: ConcurrentDict<i32,i32>>(
-    dict: D, t_secs: f64, p_get: f64, p_put: f64, n_threads: usize) {
-    let tester = ConcurrentDictTester::new(dict, p_get, p_put);
+    dict: D, n: usize, t_secs: f64, p_get: f64, p_put: f64, n_threads: usize) {
+    let tester = ConcurrentDictTester::new(dict, n, p_get, p_put);
     test_concurrent_correctness(tester, t_secs, n_threads);
   }
 
   fn test_dict_concurrent_throughput<D: ConcurrentDict<i32,i32>>(
-    dict: D, t_secs: f64, p_get: f64, p_put: f64, n_threads: usize) {
-    let tester = ConcurrentDictTester::new(dict, p_get, p_put);
+    dict: D, n: usize, t_secs: f64, p_get: f64, p_put: f64, n_threads: usize) {
+    let tester = ConcurrentDictTester::new(dict, n, p_get, p_put);
     test_concurrent_throughput(tester, t_secs, n_threads);
   }
 
@@ -1146,7 +1151,7 @@ mod dict_tests {
 
   #[test]
   fn ht_dict_speed() {
-    test_dict_throughput(HtDict::new(), 1.0, 0.33, 0.33);
+    test_dict_throughput(HtDict::new(), 50, 1.0, 0.33, 0.33);
   }
 
   #[test]
@@ -1156,21 +1161,21 @@ mod dict_tests {
 
   #[test]
   fn coarse_lock_ht_dict_correctness_concurrent() {
-    for _ in 0..10 {
+    for _ in 0..20 {
       test_dict_concurrent_correctness(
-        CoarseLockHtDict::new(), 0.0001, 0.70, 0.20, 10);
+        CoarseLockHtDict::new(), 10, 0.00005, 0.33, 0.33, 10);
     }
   }
 
   #[test]
   fn coarse_lock_ht_dict_speed() {
-    test_dict_throughput(CoarseLockHtDict::new(), 1.0, 0.33, 0.33);
+    test_dict_throughput(CoarseLockHtDict::new(), 50, 1.0, 0.33, 0.33);
   }
 
   #[test]
   fn coarse_lock_ht_dict_speed_concurrent() {
     test_dict_concurrent_throughput(
-      CoarseLockHtDict::new(), 1.0, 0.33, 0.33, 10);
+      CoarseLockHtDict::new(), 50, 1.0, 0.33, 0.33, 10);
   }
 
   #[test]
@@ -1180,7 +1185,7 @@ mod dict_tests {
 
   #[test]
   fn skiplist_dict_speed() {
-    test_dict_throughput(Skiplist::new(), 1.0, 0.33, 0.33);
+    test_dict_throughput(Skiplist::new(), 50, 1.0, 0.33, 0.33);
   }
 
   #[test]
@@ -1190,20 +1195,20 @@ mod dict_tests {
 
   #[test]
   fn lockfree_skiplist_dict_correctness_concurrent() {
-    for _ in 0..10 {
+    for _ in 0..20 {
       test_dict_concurrent_correctness(
-        LockfreeSkiplist::new(), 0.0001, 0.70, 0.20, 10);
+        LockfreeSkiplist::new(), 10, 0.00005, 0.33, 0.33, 10);
     }
   }
 
   #[test]
   fn lockfree_skiplist_dict_speed() {
-    test_dict_throughput(LockfreeSkiplist::new(), 1.0, 0.33, 0.33);
+    test_dict_throughput(LockfreeSkiplist::new(), 50, 1.0, 0.33, 0.33);
   }
 
   #[test]
   fn lockfree_skiplist_dict_speed_concurrent() {
     test_dict_concurrent_throughput(
-      LockfreeSkiplist::new(), 1.0, 0.33, 0.33, 10);
+      LockfreeSkiplist::new(), 50, 1.0, 0.33, 0.33, 10);
   }
 }

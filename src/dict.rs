@@ -315,11 +315,6 @@ where K: Eq + Hash + Send + Sync, V: Clone + Send + Sync {}
 //// LockfreeSkiplist
 ///////////////////////////////////////////////////////////////////////////////
 
-// TODOS:
-// 1. Advancing past marked node in get()
-// 2. Physical deletion in find()
-// 3. Safe update of value in put()
-
 const MAX_LEVELS: usize = 6;
 
 fn get_toplevel() -> usize {
@@ -445,6 +440,9 @@ where K: Eq + Ord, V: Clone {
             }
 
             // when is it safe to release memory?
+            if i == 0 {
+              unsafe { guard.unlinked(curr); }
+            }
 
             curr = (*pred).next[i as usize]
                      .load_shared(Ordering::SeqCst, &guard)
