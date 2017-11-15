@@ -151,12 +151,11 @@ where K: Eq + Ord, V: Clone {
   }
 
   fn gen_levels(&mut self) -> usize {
-    let mut n = 0;
-    let mut max = 1.0;
+    let mut n = 1;
+    let p = 0.5;
 
-    while self.rng.next_f64() <= max {
+    while self.rng.next_f64() < p {
       n += 1;
-      max /= 2.0;
     }
 
     n
@@ -318,12 +317,11 @@ where K: Eq + Hash + Send + Sync, V: Clone + Send + Sync {}
 const MAX_LEVELS: usize = 6;
 
 fn get_toplevel() -> usize {
-  let mut n = 0;
-  let mut max = 1.0;
+  let mut n = 1;
+  let p = 0.5;
 
-  while rand::thread_rng().next_f64() <= max && n < MAX_LEVELS {
+  while rand::thread_rng().next_f64() < p && n < MAX_LEVELS {
     n += 1;
-    max /= 2.0;
   }
 
   n
