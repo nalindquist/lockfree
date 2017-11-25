@@ -492,7 +492,7 @@ where K: Copy + Clone + Debug + Eq + Hash, V: Copy + Clone + Debug + Eq {
 #[derive(Clone)]
 pub enum PQueueOp<T> 
 where T: Copy + Clone + Debug {
-  Insert(T),
+  Insert(T, bool),
   RemoveMin(Option<T>),
 }
 
@@ -519,8 +519,10 @@ where T: Copy + Clone + Debug + Ord + Eq {
 
   fn push(&mut self, a: Action<Self::P>) {
     match a.op {
-      PQueueOp::Insert(i) => {
-        self.state.push(i);
+      PQueueOp::Insert(i, c) => {
+        if c {
+          self.state.push(i);
+        }
       }
       PQueueOp::RemoveMin(_) => {
         if self.state.len() > 0 {
@@ -536,10 +538,12 @@ where T: Copy + Clone + Debug + Ord + Eq {
   fn pop(&mut self) {
     self.path.pop().map(|a| {
       match a.op {
-        PQueueOp::Insert(i) => {
-          let p = self.state.iter().position(|e| *e == i);
-          assert!(p.is_some());
-          self.state.remove(p.unwrap());
+        PQueueOp::Insert(i, c) => {
+          if c {
+            let p = self.state.iter().position(|e| *e == i);
+            assert!(p.is_some());
+            self.state.remove(p.unwrap());
+          }
         }
         PQueueOp::RemoveMin(r) => {
           match r {
@@ -569,7 +573,17 @@ where T: Copy + Clone + Debug + Ord + Eq {
 
   fn is_consistent_with(&self, a: &Action<Self::P>) -> bool {
     match a.op {
-      PQueueOp::Insert(_) => true,
+      PQueueOp::Insert(i, c) => {
+        let p = self.state.iter().position(|e| *e == i);
+        match p {
+          None => {
+            c
+          }
+          Some(_) => {
+            !c
+          }
+        }
+      }
       PQueueOp::RemoveMin(r) => {
         r.map_or_else(
           || {
