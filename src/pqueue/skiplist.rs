@@ -1,162 +1,15 @@
-///////////////////////////////////////////////////////////////////////////////
-//// 
-//// Module: pqueue
-////
-///////////////////////////////////////////////////////////////////////////////
-
-use std::cmp;
-use std::hash::Hash;
-use std::collections::{BinaryHeap, HashSet};
-use std::sync::{Mutex, Arc};
+use std::sync::Arc;
 use std::sync::atomic::{Ordering, AtomicBool};
 use std::mem;
 use std::time::Instant;
-
 use rand::{self, Rng};
 use crossbeam::epoch::{self, MarkableAtomic, Owned};
+use super::*;
 
 
-///////////////////////////////////////////////////////////////////////////////
-//// Trait Definitions
-///////////////////////////////////////////////////////////////////////////////
-
-pub trait PQueue<T> {
-  fn new() -> Self;
-  fn insert(&mut self, elem: T) -> bool;
-  fn remove_min(&mut self) -> Option<T>;
-  fn is_empty(&self) -> bool;
-  fn size(&self) -> usize;
-}
-
-pub trait ConcurrentPQueue<T>: PQueue<T> + Clone + Send + Sync {}
-
-
-///////////////////////////////////////////////////////////////////////////////
-//// HeapPQueue
-///////////////////////////////////////////////////////////////////////////////
-
-#[derive(Eq)]
-#[derive(PartialEq)]
-struct RevOrd<T> {
-  data: T,
-}
-
-impl<T> RevOrd<T> {
-  fn new(data: T) -> Self {
-    Self {
-      data: data,
-    }
-  }
-
-  fn into_data(self) -> T {
-    self.data
-  }
-}
-
-impl<T> Ord for RevOrd<T>
-where T: Ord {
-  fn cmp(&self, other: &Self) -> cmp::Ordering {
-    other.data.cmp(&self.data)
-  }
-}
-
-impl<T> PartialOrd for RevOrd<T>
-where T: Ord {
-  fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
-    Some(self.cmp(other))
-  }
-}
-
-pub struct HeapPQueue<T> {
-  heap: BinaryHeap<RevOrd<T>>,
-  set: HashSet<T>,
-}
-
-impl<T> PQueue<T> for HeapPQueue<T>
-where T: Eq + Ord + Hash + Clone {
-  fn new() -> Self {
-    Self {
-      heap: BinaryHeap::new(),
-      set: HashSet::new(),
-    }
-  }
-
-  fn insert(&mut self, elem: T) -> bool {
-    if self.set.contains(&elem) {
-      false
-    } else {
-      self.set.insert(elem.clone());
-      self.heap.push(RevOrd::new(elem));
-      true
-    }
-  }
-
-  fn remove_min(&mut self) -> Option<T> {
-    self.heap.pop().map(|ro| {
-      let t = ro.into_data();
-      self.set.remove(&t);
-      t
-    })
-  }
-
-  fn is_empty(&self) -> bool {
-    self.heap.is_empty()
-  }
-
-  fn size(&self) -> usize {
-    self.heap.len()
-  }
-}
-
-
-///////////////////////////////////////////////////////////////////////////////
-//// CoarseLockHeapPQueue
-///////////////////////////////////////////////////////////////////////////////
-
-pub struct CoarseLockHeapPQueue<T> {
-  arc: Arc<Mutex<HeapPQueue<T>>>,
-}
-
-impl<T> PQueue<T> for CoarseLockHeapPQueue<T> 
-where T: Eq + Ord + Hash + Clone {
-  fn new() -> Self {
-    Self {
-      arc: Arc::new(Mutex::new(HeapPQueue::new())),
-    }
-  }
-
-  fn insert(&mut self, elem: T) -> bool {
-    self.arc.lock().unwrap().insert(elem)
-  }
-
-  fn remove_min(&mut self) -> Option<T> {
-    self.arc.lock().unwrap().remove_min()
-  }
-
-  fn is_empty(&self) -> bool {
-    self.arc.lock().unwrap().is_empty()
-  }
-
-  fn size(&self) -> usize {
-    self.arc.lock().unwrap().size()
-  }
-}
-
-impl<T> Clone for CoarseLockHeapPQueue<T> {
-  fn clone(&self) -> Self {
-    Self {
-      arc: self.arc.clone()
-    }
-  }
-}
-
-impl<T> ConcurrentPQueue<T> for CoarseLockHeapPQueue<T> 
-where T: Eq + Ord + Hash + Clone + Send + Sync {}
-
-
-///////////////////////////////////////////////////////////////////////////////
-//// SkiplistPQueue
-///////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////
+//// Skiplist - Utilities
+//////////////////////////////////////////////////////////////////////////////
 
 const MAX_LEVELS: usize = 6;
 
@@ -178,6 +31,11 @@ fn null_vec<T>() -> Vec<MarkablePtr<T>> {
   }
   v
 }
+
+
+//////////////////////////////////////////////////////////////////////////////
+//// Skiplist - Node Representation
+//////////////////////////////////////////////////////////////////////////////
 
 type MarkablePtr<T> = MarkableAtomic<Node<T>>;
 
@@ -232,12 +90,17 @@ impl<T> Node<T> {
   }
 }
 
-struct SkiplistSet<T> {
+
+//////////////////////////////////////////////////////////////////////////////
+//// Skiplist - Implementation
+//////////////////////////////////////////////////////////////////////////////
+
+struct Skiplist<T> {
   head: Arc<MarkablePtr<T>>,
   tail: Arc<MarkablePtr<T>>,
 }
 
-impl<T> SkiplistSet<T>
+impl<T> Skiplist<T>
 where T: Eq + Ord + Clone, {
   fn new() -> Self {
     let guard = epoch::pin();
@@ -300,7 +163,7 @@ where T: Eq + Ord + Clone, {
               continue 'retry;
             }
 
-            // when is it safe to release memory?
+            // release memory
             if i == 0 {
               unsafe { guard.unlinked(curr); }
             }
@@ -514,7 +377,7 @@ where T: Eq + Ord + Clone, {
   }
 }
 
-impl<T> Clone for SkiplistSet<T> {
+impl<T> Clone for Skiplist<T> {
   fn clone(&self) -> Self {
     Self {
       head: self.head.clone(),
@@ -523,15 +386,22 @@ impl<T> Clone for SkiplistSet<T> {
   }
 }
 
+
+//////////////////////////////////////////////////////////////////////////////
+//// SkiplistPQueue Implementation
+//////////////////////////////////////////////////////////////////////////////
+
+/// A `ConcurrentPQueue<T>` implemented using a lock-free skiplist and
+/// timestamps.
 pub struct SkiplistPQueue<T> {
-  skiplist: SkiplistSet<T>,
+  skiplist: Skiplist<T>,
 }
 
 impl<T> PQueue<T> for SkiplistPQueue<T> 
 where T: Eq + Ord + Clone {
   fn new() -> Self {
     Self {
-      skiplist: SkiplistSet::new(),
+      skiplist: Skiplist::new(),
     }
   }
 

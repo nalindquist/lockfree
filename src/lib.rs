@@ -1181,36 +1181,36 @@ mod dict_tests {
 
   #[test]
   fn skiplist_dict_correctness() {
-    test_dict_correctness(Skiplist::new());
+    test_dict_correctness(SkiplistDict::new());
   }
 
   #[test]
   fn skiplist_dict_speed() {
-    test_dict_throughput(Skiplist::new(), 50, 1.0, 0.33, 0.33);
+    test_dict_throughput(SkiplistDict::new(), 50, 1.0, 0.33, 0.33);
   }
 
   #[test]
   fn lockfree_skiplist_dict_correctness() {
-    test_dict_correctness(LockfreeSkiplist::new());
+    test_dict_correctness(ConcurrentSkiplistDict::new());
   }
 
   #[test]
   fn lockfree_skiplist_dict_correctness_concurrent() {
     for _ in 0..20 {
       test_dict_concurrent_correctness(
-        LockfreeSkiplist::new(), 10, 0.00005, 0.33, 0.33, 10);
+        ConcurrentSkiplistDict::new(), 10, 0.00005, 0.33, 0.33, 10);
     }
   }
 
   #[test]
   fn lockfree_skiplist_dict_speed() {
-    test_dict_throughput(LockfreeSkiplist::new(), 50, 1.0, 0.33, 0.33);
+    test_dict_throughput(ConcurrentSkiplistDict::new(), 50, 1.0, 0.33, 0.33);
   }
 
   #[test]
   fn lockfree_skiplist_dict_speed_concurrent() {
     test_dict_concurrent_throughput(
-      LockfreeSkiplist::new(), 50, 1.0, 0.33, 0.33, 10);
+      ConcurrentSkiplistDict::new(), 50, 1.0, 0.33, 0.33, 10);
   }
 }
 
