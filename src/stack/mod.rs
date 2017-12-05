@@ -240,8 +240,12 @@ mod stack_tests {
 
   #[test]
   fn coarse_lock_stack_speed_concurrent() {
-    test_stack_concurrent_speed(
-      CoarseLockStack::new(), 1.0, 0.5, 10);
+    for i in 0..6 {
+      let t = 2usize.pow(i);
+      println!("\nThreads: {}", t);
+      test_stack_concurrent_speed(
+        CoarseLockStack::new(), 1.0, 0.5, t);
+    }
   }
 
   #[test]
@@ -264,7 +268,11 @@ mod stack_tests {
 
   #[test]
   fn treiber_stack_speed_concurrent() {
-    test_stack_concurrent_speed(
-      TreiberStack::new(), 1.0, 0.5, 10);
+    for i in 0..6 {
+      let t = 2usize.pow(i);
+      println!("\nThreads: {}", t);
+      test_stack_concurrent_speed(
+        TreiberStack::new(), 1.0, 0.5, t);
+    }
   }
 }

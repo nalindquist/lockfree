@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::{Ordering, AtomicPtr};
 use std::mem;
 use rand::{self, Rng};
-use crossbeam::epoch::{self, MarkableAtomic, Owned};
+use crossbeam::epoch::{self, MarkableAtomic, Shared, Owned, Guard};
 use super::*;
 
 
@@ -37,6 +37,7 @@ fn null_vec<K,V>() -> Vec<MarkablePtr<K,V>> {
 //////////////////////////////////////////////////////////////////////////////
 
 type MarkablePtr<K,V> = MarkableAtomic<Node<K,V>>;
+type SharedPtr<'a,K,V> = Option<Shared<'a, Node<K,V>>>;
 
 struct Node<K,V> {
   key: K,
@@ -95,48 +96,45 @@ where K: Eq + Ord, V: Clone {
 /// A `ConcurrentDict<K,V>` implemented using a lock-free skiplist.
 pub struct ConcurrentSkiplistDict<K,V> {
   head: Arc<MarkablePtr<K,V>>,
-  tail: Arc<MarkablePtr<K,V>>,
 }
 
 impl<K,V> ConcurrentSkiplistDict<K,V>
 where K: Eq + Ord, V: Clone {
-  fn find(&mut self, k: &K) 
-          -> (MarkablePtr<K,V>, Vec<MarkablePtr<K,V>>, Vec<MarkablePtr<K,V>>) 
+  fn find<'a>(&mut self, k: &K, guard: &'a Guard) 
+          -> (SharedPtr<'a,K,V>, Vec<SharedPtr<'a,K,V>>, Vec<SharedPtr<'a,K,V>>)
   {
-    let guard = epoch::pin();
-    let mut preds = null_vec();
-    let mut succs = null_vec();
+    let mut preds = Vec::new();
+    let mut succs = Vec::new();
 
     // return here every time a CAS fails
     'retry: loop {
       let mut pred = self.head
-                       .load_shared(Ordering::SeqCst, &guard)
+                       .load_shared(Ordering::SeqCst, guard)
                        .unwrap();
-      let mut i = ((*pred).next.len() - 1) as i32;
-      let mut curr = (*pred).next[i as usize]
-                       .load_shared(Ordering::SeqCst, &guard)
+      let n = (*pred).toplevel();
+      let mut curr = (*pred).next[n-1]
+                       .load_shared(Ordering::SeqCst, guard)
                        .unwrap();
       let mut succ;
       let mut mark;
       let mut pair;
 
       // proceed down through each level
-      while i >= 0 {
-        curr = (*pred).next[i as usize]
-                 .load_shared(Ordering::SeqCst, &guard)
+      for i in (0..n).rev() {
+        curr = (*pred).next[i]
+                 .load_shared(Ordering::SeqCst, guard)
                  .unwrap();
-        
 
         // advance curr until curr is not less than key
         loop {
-          pair = (*curr).next[i as usize]
-                   .load(Ordering::SeqCst, &guard);
+          pair = (*curr).next[i]
+                   .load(Ordering::SeqCst, guard);
           succ = pair.0;
           mark = pair.1;
 
           // physical deletion of marked nodes 
           while mark {
-            let ok = (*pred).next[i as usize]
+            let ok = (*pred).next[i]
                        .cas_shared(Some(curr), succ,
                                    false, false,
                                    Ordering::SeqCst);
@@ -144,16 +142,11 @@ where K: Eq + Ord, V: Clone {
               continue 'retry;
             }
 
-            // when is it safe to release memory?
-            if i == 0 {
-              unsafe { guard.unlinked(curr); }
-            }
-
-            curr = (*pred).next[i as usize]
-                     .load_shared(Ordering::SeqCst, &guard)
+            curr = (*pred).next[i]
+                     .load_shared(Ordering::SeqCst, guard)
                      .unwrap();
-            pair = (*curr).next[i as usize]
-                     .load(Ordering::SeqCst, &guard);
+            pair = (*curr).next[i]
+                     .load(Ordering::SeqCst, guard);
             succ = pair.0;
             mark = pair.1;
           }
@@ -167,22 +160,17 @@ where K: Eq + Ord, V: Clone {
         }
 
         // curr is not less than key, record pred and succ nodes
-        let pred_ptr = MarkableAtomic::null();
-        pred_ptr.store_shared(Some(pred), false, Ordering::SeqCst);
-        let succ_ptr = MarkableAtomic::null();
-        succ_ptr.store_shared(Some(curr), false, Ordering::SeqCst);
-        preds[i as usize] = pred_ptr;
-        succs[i as usize] = succ_ptr;
-
-        // to next level
-        i -= 1;
+        preds.push(Some(pred));
+        succs.push(Some(curr));
       }
 
       // bottom level reached
-      let p = MarkableAtomic::null();
+      let mut p = None;
       if !(*curr).is_tail && (*curr).key == *k {
-        p.store_shared(Some(curr), false, Ordering::SeqCst);
+        p = Some(curr);
       }
+      preds.reverse();
+      succs.reverse();
       return (p, preds, succs); 
     }
   }
@@ -203,7 +191,6 @@ where K: Eq + Ord, V: Clone {
 
     Self {
       head: Arc::new(MarkableAtomic::new(head, false)),
-      tail: Arc::new(tail_atomic),
     }
   }
 
@@ -212,22 +199,22 @@ where K: Eq + Ord, V: Clone {
 
     let mut pred = self.head.load_shared(Ordering::SeqCst, &guard)
                             .unwrap();
-    let mut i = ((*pred).next.len() - 1) as i32;
-    let mut curr = (*pred).next[i as usize]
+    let n = (*pred).toplevel();
+    let mut curr = (*pred).next[n-1]
                      .load_shared(Ordering::SeqCst, &guard)
                      .unwrap();
     let mut succ;
     let mut mark;
 
     // proceed down through all levels, starting at top
-    while i >= 0 {
-      curr = (*pred).next[i as usize]
+    for i in (0..n).rev() {
+      curr = (*pred).next[i]
                .load_shared(Ordering::SeqCst, &guard)
                .unwrap();
 
       // advance until curr is not less than key
       loop {
-        let pair = (*curr).next[i as usize]
+        let pair = (*curr).next[i]
                      .load(Ordering::SeqCst, &guard);
         succ = pair.0;
         mark = pair.1;
@@ -235,7 +222,7 @@ where K: Eq + Ord, V: Clone {
         // skip marked nodes
         while mark {
           curr = succ.unwrap();
-          let pair = (*curr).next[i as usize]
+          let pair = (*curr).next[i]
                        .load(Ordering::SeqCst, &guard);
           succ = pair.0;
           mark = pair.1;
@@ -248,8 +235,6 @@ where K: Eq + Ord, V: Clone {
           break;
         }
       }
-
-      i -= 1;
     }
 
     if !(*curr).is_tail && (*curr).key == *k {
@@ -267,30 +252,28 @@ where K: Eq + Ord, V: Clone {
 
     // return here for retry
     loop {
-      let (p, mut preds, mut succs) = self.find(&(*node).key);
+      let (p, mut preds, mut succs) = self.find(&(*node).key, &guard);
 
       // check if node exists
-      let curr = p.load_shared(Ordering::SeqCst, &guard);
-      if curr.is_some() {
-        let curr = curr.unwrap();
-        let p = (*curr).value.load(Ordering::SeqCst);
+      if p.is_some() {
+        let p = p.unwrap();
+        let oldp = (*p).value.load(Ordering::SeqCst);
         let newp = Box::into_raw(Box::new(v.clone()));
-        if (*curr).value.compare_and_swap(p, newp, Ordering::SeqCst) != p {
+        if (*p).value.compare_and_swap(oldp, newp, Ordering::SeqCst) != oldp {
           continue; // retry
         }
-        unsafe { return Some((*p).clone()) };
+        unsafe { return Some((*oldp).clone()); }
       }
 
       // set next pointers in new node
       for i in 0..new_top {
-        let succ = succs[i].load_shared(Ordering::SeqCst, &guard);
+        let succ = succs[i];
         node.next[i].store_shared(succ, false, Ordering::SeqCst);
       }
 
       // attempt CAS at bottom level
-      let pred = preds[0].load_shared(Ordering::SeqCst, &guard)
-                         .unwrap();
-      let succ = succs[0].load_shared(Ordering::SeqCst, &guard);
+      let pred = preds[0].unwrap();
+      let succ = succs[0];
       match (*pred).next[0].cas_and_ref(succ, node,
                                         false, false,
                                         Ordering::SeqCst, &guard) {
@@ -298,9 +281,8 @@ where K: Eq + Ord, V: Clone {
           // node is now in list, do CAS on ith level
           for i in 1..new_top {
             loop {
-              let pred = preds[i].load_shared(Ordering::SeqCst, &guard)
-                                 .unwrap();
-              let succ = succs[i].load_shared(Ordering::SeqCst, &guard);
+              let pred = preds[i].unwrap();
+              let succ = succs[i];
               if (*pred).next[i].cas_shared(succ, Some(node),
                                             false, false,
                                             Ordering::SeqCst) {
@@ -308,7 +290,7 @@ where K: Eq + Ord, V: Clone {
               }
 
               // retry find
-              let triple = self.find(&(*node).key);
+              let triple = self.find(&(*node).key, &guard);
               preds = triple.1;
               succs = triple.2;
             }
@@ -322,7 +304,6 @@ where K: Eq + Ord, V: Clone {
           continue; // retry
         }
       }
-
     }
   }
 
@@ -330,47 +311,49 @@ where K: Eq + Ord, V: Clone {
     let guard = epoch::pin();
 
     loop {
-      let (p, _, succs) = self.find(k);
+      let (p, _, _) = self.find(k, &guard);
 
       // check if node exists
-      let curr = p.load_shared(Ordering::SeqCst, &guard);
-      if curr.is_none() {
+      if p.is_none() {
         return None;
       }
-      let curr = curr.unwrap();
-
-      let victim = succs[0].load_shared(Ordering::SeqCst, &guard)
-                           .unwrap();
+      let p = p.unwrap();
       let mut succ;
       let mut mark;
 
       // mark each level, starting from top
-      for i in (1..victim.toplevel()).rev() {
-        let pair = (*victim).next[i].load(Ordering::SeqCst, &guard);
+      for i in (1..p.toplevel()).rev() {
+        let pair = (*p).next[i].load(Ordering::SeqCst, &guard);
         succ = pair.0;
         mark = pair.1;
 
         while !mark {
-          (*victim).next[i].mark(succ, false, true, Ordering::SeqCst);
-          let pair = (*victim).next[i].load(Ordering::SeqCst, &guard);
+          (*p).next[i].mark(succ, false, true, Ordering::SeqCst);
+          let pair = (*p).next[i].load(Ordering::SeqCst, &guard);
           succ = pair.0;
           mark = pair.1;
         }
       }
 
       // mark bottom level
-      succ = (*victim).next[0].load_shared(Ordering::SeqCst, &guard);
+      succ = (*p).next[0].load_shared(Ordering::SeqCst, &guard);
       loop {
-        let ok = (*victim).next[0].mark(succ, false, true, Ordering::SeqCst);
-        let pair = (*victim).next[0].load(Ordering::SeqCst, &guard);
+        let ok = (*p).next[0].mark(succ, false, true, Ordering::SeqCst);
+        let pair = (*p).next[0].load(Ordering::SeqCst, &guard);
         succ = pair.0;
         mark = pair.1;
 
         if ok {
-          // mark succeeded, do physical deletion
-          self.find(&k);
-          let p = (*curr).value.load(Ordering::SeqCst);
-          unsafe { return Some((*p).clone()); }
+          // mark succeeded, get value
+          let vp = (*p).value.load(Ordering::SeqCst);
+          let v;
+          unsafe { v = (*vp).clone(); }
+
+          // do physical deletion
+          self.find(k, &guard);
+          //unsafe { guard.unlinked(p); }
+
+          return Some(v);
         } else if mark {
           // someone beat us to it
           return None; 
@@ -414,7 +397,6 @@ where K: Eq + Ord, V: Clone {
   fn clone(&self) -> Self {
     Self {
       head: self.head.clone(),
-      tail: self.tail.clone(),
     }
   }
 }

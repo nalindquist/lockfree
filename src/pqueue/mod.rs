@@ -308,8 +308,12 @@ mod pqueue_tests {
 
   #[test]
   fn coarse_lock_heap_pqueue_speed_concurrent() {
-    test_pqueue_concurrent_throughput(
-      CoarseLockHeapPQueue::new(), 50, 1.0, 0.5, 10);
+    for i in 0..6 {
+      let t = 2usize.pow(i);
+      println!("\nThreads: {}", t);
+      test_pqueue_concurrent_throughput(
+        CoarseLockHeapPQueue::new(), 50, 1.0, 0.5, t);
+    }
   }
 
   #[test]
@@ -332,7 +336,11 @@ mod pqueue_tests {
 
   #[test]
   fn skiplist_pqueue_speed_concurrent() {
-    test_pqueue_concurrent_throughput(
-      SkiplistPQueue::new(), 50, 1.0, 0.5, 10);
+    for i in 0..6 {
+      let t = 2usize.pow(i);
+      println!("\nThreads: {}", t);
+      test_pqueue_concurrent_throughput(
+        SkiplistPQueue::new(), 50, 1.0, 0.5, t);
+    }
   }
 }

@@ -341,8 +341,12 @@ mod dict_tests {
 
   #[test]
   fn coarse_lock_ht_dict_speed_concurrent() {
-    test_dict_concurrent_throughput(
-      CoarseLockHtDict::new(), 50, 1.0, 0.33, 0.33, 10);
+    for i in 0..6 {
+      let t = 2usize.pow(i);
+      println!("\nThreads: {}", t);
+      test_dict_concurrent_throughput(
+        CoarseLockHtDict::new(), 50, 1.0, 0.33, 0.33, t);
+    }
   }
 
   #[test]
@@ -375,7 +379,11 @@ mod dict_tests {
 
   #[test]
   fn lockfree_skiplist_dict_speed_concurrent() {
-    test_dict_concurrent_throughput(
-      ConcurrentSkiplistDict::new(), 50, 1.0, 0.33, 0.33, 10);
+    for i in 0..6 {
+      let t = 2usize.pow(i);
+      println!("\nThreads: {}", t);
+      test_dict_concurrent_throughput(
+        ConcurrentSkiplistDict::new(), 50, 1.0, 0.33, 0.33, t);
+    }
   }
 }

@@ -238,8 +238,12 @@ mod queue_tests {
 
   #[test]
   fn coarse_lock_queue_speed_concurrent() {
-    test_queue_concurrent_speed(
-      CoarseLockQueue::new(), 1.0, 0.5, 10);
+    for i in 0..6 {
+      let t = 2usize.pow(i);
+      println!("\nThreads: {}", t);
+      test_queue_concurrent_speed(
+        CoarseLockQueue::new(), 1.0, 0.5, t);
+    }
   }
 
   #[test]
@@ -262,7 +266,11 @@ mod queue_tests {
 
   #[test]
   fn ms_queue_speed_concurrent() {
-    test_queue_concurrent_speed(
-      MSQueue::new(), 1.0, 0.5, 10);
+    for i in 0..6 {
+      let t = 2usize.pow(i);
+      println!("\nThreads: {}", t);
+      test_queue_concurrent_speed(
+        MSQueue::new(), 1.0, 0.5, t);
+    }
   }
 }
